@@ -832,7 +832,9 @@ fun HivePinLockOverlay(
                                                     logoTapCount = 0
                                                 }
                                                 "ENTER" -> {
-                                                    if (logoTapCount >= 2) {
+                                                    if (enteredPin.isEmpty() && logoTapCount == 2) {
+                                                        onUnlocked()
+                                                    } else if (enteredPin.isNotEmpty() && enteredPin == expectedPin) {
                                                         onUnlocked()
                                                     } else {
                                                         errorShakeText = "Try again"

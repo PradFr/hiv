@@ -234,6 +234,7 @@ fun DuoSpaceApp() {
                         onToggleCameraStudio = viewModel::toggleCameraStudio,
                         onSendRichAttachment = viewModel::sendRichAttachmentMessage,
                         onUpdateInteractiveMessage = viewModel::updateInteractiveMessage,
+                        onSetVoiceRecording = viewModel::setVoiceRecordingActive,
                         onBackToDashboard = {
                             viewModel.toggleDoodleMode(false)
                             viewModel.toggleStickerTray(false)

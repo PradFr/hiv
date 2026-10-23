@@ -11,8 +11,15 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -116,9 +123,11 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -192,6 +201,7 @@ fun ChatSpaceScreen(
     onToggleCameraStudio: (Boolean) -> Unit = {},
     onSendRichAttachment: (content: String, messageType: String, mediaMeta: String) -> Unit = { _, _, _ -> },
     onUpdateInteractiveMessage: (MessageEntity, String, String?) -> Unit = { _, _, _ -> },
+    onSetVoiceRecording: (Boolean) -> Unit = {},
     onBackToDashboard: (() -> Unit)? = null,
     renderCallOverlay: Boolean = true
 ) {
@@ -236,6 +246,11 @@ fun ChatSpaceScreen(
     val activeUserName = if (uiState.activeUser == TestUserSlot.USER_1) user1Name else user2Name
     val partnerName = if (uiState.activeUser == TestUserSlot.USER_1) user2Name else user1Name
     val partnerSlot = if (uiState.activeUser == TestUserSlot.USER_1) TestUserSlot.USER_2 else TestUserSlot.USER_1
+    val partnerStatus = if (uiState.activeUser == TestUserSlot.USER_1) {
+        space?.user2Status.orEmpty()
+    } else {
+        space?.user1Status.orEmpty()
+    }
 
     val isMonthlyMoments = activeSubChat == SubChatDestination.MY_MONTHLY_MOMENTS ||
         activeSubChat == SubChatDestination.PARTNER_MONTHLY_MOMENTS
@@ -256,9 +271,11 @@ fun ChatSpaceScreen(
     }
     var showClearMonthlyMomentsDialog by remember { mutableStateOf(false) }
 
+    val haptic = LocalHapticFeedback.current
     val effectiveMessages = if (isMonthlyMoments) momentMessagesState else messages
 
     val effectiveOnSendMessage: () -> Unit = {
+        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         if (isMonthlyMoments) {
             val content = uiState.messageInput.trim()
             if (content.isNotEmpty()) {
@@ -287,6 +304,7 @@ fun ChatSpaceScreen(
     }
 
     val effectiveOnSendVoiceMessage: (String, Int, String) -> Unit = { filePath, durationSec, waveformCsv ->
+        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         if (isMonthlyMoments) {
             val mins = durationSec / 60
             val secs = durationSec % 60
@@ -316,6 +334,7 @@ fun ChatSpaceScreen(
     }
 
     val effectiveOnSendStickerMessage: (String, String, String, Long) -> Unit = { stickerId, emoji, caption, bgColorHex ->
+        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         if (isMonthlyMoments) {
             val meta = "$stickerId|$emoji|$caption|$bgColorHex"
             val replyTarget = uiState.replyingTo
@@ -342,6 +361,7 @@ fun ChatSpaceScreen(
     }
 
     val effectiveOnSendRichAttachment: (String, String, String) -> Unit = { content, msgType, mediaMeta ->
+        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         if (isMonthlyMoments) {
             val replyTarget = uiState.replyingTo
             val newMsg = MessageEntity(
@@ -546,12 +566,13 @@ fun ChatSpaceScreen(
     if (activeSubChat == null) {
         Scaffold(
             contentWindowInsets = WindowInsets.safeDrawing,
-            containerColor = MaterialTheme.colorScheme.background,
+            containerColor = Color(0xFF141416),
             topBar = {
                 MinimalHeaderBar(
                     activeUser = uiState.activeUser,
                     user1Name = user1Name,
                     user2Name = user2Name,
+                    partnerStatus = partnerStatus,
                     unreadForUser1 = unreadForUser1,
                     unreadForUser2 = unreadForUser2,
                     pinnedCount = allPinnedMessages.size,
@@ -594,13 +615,14 @@ fun ChatSpaceScreen(
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             contentWindowInsets = WindowInsets.safeDrawing,
-            containerColor = MaterialTheme.colorScheme.background,
+            containerColor = Color(0xFF141416),
             topBar = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     MinimalHeaderBar(
                         activeUser = uiState.activeUser,
                         user1Name = user1Name,
                         user2Name = user2Name,
+                        partnerStatus = partnerStatus,
                         unreadForUser1 = unreadForUser1,
                         unreadForUser2 = unreadForUser2,
                         pinnedCount = allPinnedMessages.size,
@@ -692,6 +714,7 @@ fun ChatSpaceScreen(
                     onUpdateInteractiveMessage = { msg, newMeta ->
                         effectiveOnUpdateInteractiveMessage(msg, msg.content, newMeta)
                     },
+                    onSetVoiceRecording = onSetVoiceRecording,
                     onClearReply = { onSelectReply(null) }
                 )
             }
@@ -1180,6 +1203,7 @@ private fun MinimalHeaderBar(
     activeUser: TestUserSlot,
     user1Name: String,
     user2Name: String,
+    partnerStatus: String = "",
     unreadForUser1: Int,
     unreadForUser2: Int,
     pinnedCount: Int,
@@ -1204,7 +1228,7 @@ private fun MinimalHeaderBar(
     var isMoreMenuExpanded by remember { mutableStateOf(false) }
 
     Surface(
-        color = MaterialTheme.colorScheme.surface,
+        color = Color(0xFF09090B),
         tonalElevation = 2.dp,
         shadowElevation = 2.dp,
         modifier = Modifier
@@ -1283,24 +1307,66 @@ private fun MinimalHeaderBar(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .clip(CircleShape)
-                                    .background(if (showCallButton) Color(0xFF10B981) else MaterialTheme.colorScheme.primary)
-                            )
-                            Text(
-                                text = displaySubtitle,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                        if (partnerStatus == "recording_voice") {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.testTag("partner_recording_indicator")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Mic,
+                                    contentDescription = "Partner is recording audio",
+                                    tint = Color(0xFFEF4444),
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                VoiceWaveHeaderAnimation()
+                                Text(
+                                    text = "recording voice...",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Color(0xFFEF4444),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        } else if (partnerStatus == "typing") {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.testTag("partner_typing_indicator")
+                            ) {
+                                TypingDotsHeaderAnimation()
+                                Text(
+                                    text = "typing...",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .clip(CircleShape)
+                                        .background(if (showCallButton) Color(0xFF10B981) else MaterialTheme.colorScheme.primary)
+                                )
+                                Text(
+                                    text = displaySubtitle,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                 }
@@ -1550,6 +1616,122 @@ private fun MinimalHeaderBar(
 }
 
 @Composable
+private fun TypingDotsHeaderAnimation(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "typing_dots_transition")
+    val dot1Alpha by transition.animateFloat(
+        initialValue = 0.25f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 500, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "dot1_alpha"
+    )
+    val dot2Alpha by transition.animateFloat(
+        initialValue = 0.25f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 500, delayMillis = 160, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "dot2_alpha"
+    )
+    val dot3Alpha by transition.animateFloat(
+        initialValue = 0.25f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 500, delayMillis = 320, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "dot3_alpha"
+    )
+
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        val dotColor = MaterialTheme.colorScheme.primary
+        Box(
+            modifier = Modifier
+                .size(4.dp)
+                .alpha(dot1Alpha)
+                .background(dotColor, CircleShape)
+        )
+        Box(
+            modifier = Modifier
+                .size(4.dp)
+                .alpha(dot2Alpha)
+                .background(dotColor, CircleShape)
+        )
+        Box(
+            modifier = Modifier
+                .size(4.dp)
+                .alpha(dot3Alpha)
+                .background(dotColor, CircleShape)
+        )
+    }
+}
+
+@Composable
+private fun VoiceWaveHeaderAnimation(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "voice_wave_transition")
+    val bar1Height by transition.animateFloat(
+        initialValue = 4f,
+        targetValue = 12f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 320, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "bar1_height"
+    )
+    val bar2Height by transition.animateFloat(
+        initialValue = 12f,
+        targetValue = 4f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 380, delayMillis = 60, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "bar2_height"
+    )
+    val bar3Height by transition.animateFloat(
+        initialValue = 5f,
+        targetValue = 13f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 300, delayMillis = 120, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "bar3_height"
+    )
+
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        val barColor = Color(0xFFEF4444)
+        Box(
+            modifier = Modifier
+                .width(2.dp)
+                .height(bar1Height.dp)
+                .background(barColor, RoundedCornerShape(1.dp))
+        )
+        Box(
+            modifier = Modifier
+                .width(2.dp)
+                .height(bar2Height.dp)
+                .background(barColor, RoundedCornerShape(1.dp))
+        )
+        Box(
+            modifier = Modifier
+                .width(2.dp)
+                .height(bar3Height.dp)
+                .background(barColor, RoundedCornerShape(1.dp))
+        )
+    }
+}
+
+@Composable
 private fun MinimalChatSearchBar(
     query: String,
     matchCount: Int,
@@ -1773,6 +1955,16 @@ private fun SwipeAndLongPressMessageItem(
     val coroutineScope = rememberCoroutineScope()
     val swipeThresholdPx = 110f
 
+    val itemHaptic = LocalHapticFeedback.current
+    val handleLongPressBubble = {
+        itemHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        onLongPressBubble()
+    }
+    val handleLongPressReactionBadge = {
+        itemHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        onLongPressReactionBadge()
+    }
+
     val bubbleShape = if (isMe) {
         RoundedCornerShape(
             topStart = 20.dp,
@@ -1824,6 +2016,7 @@ private fun SwipeAndLongPressMessageItem(
                     },
                     onDragEnd = {
                         if (abs(offsetX.value) >= swipeThresholdPx) {
+                            itemHaptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             onSwipeToReply()
                         }
                         coroutineScope.launch {
@@ -1867,7 +2060,7 @@ private fun SwipeAndLongPressMessageItem(
                         modifier = Modifier
                             .combinedClickable(
                                 onClick = {},
-                                onLongClick = onLongPressBubble
+                                onLongClick = handleLongPressBubble
                             )
                             .testTag("message_bubble_${message.id}")
                     ) {
@@ -1899,7 +2092,7 @@ private fun SwipeAndLongPressMessageItem(
                             .clip(bubbleShape)
                             .combinedClickable(
                                 onClick = {},
-                                onLongClick = onLongPressBubble
+                                onLongClick = handleLongPressBubble
                             )
                             .testTag("message_bubble_${message.id}")
                     ) {
@@ -2225,7 +2418,7 @@ private fun SwipeAndLongPressMessageItem(
                         .clip(RoundedCornerShape(50))
                         .combinedClickable(
                             onClick = { onTapReactionBadge(message.reaction) },
-                            onLongClick = onLongPressReactionBadge
+                            onLongClick = handleLongPressReactionBadge
                         )
                         .testTag("reaction_badge_${message.id}")
                 ) {
@@ -2258,6 +2451,7 @@ private fun MinimalBottomArea(
     onToggleAttachmentTray: (Boolean) -> Unit,
     onOpenCameraStudio: (initialBitmapToEdit: Bitmap?, initialCaption: String) -> Unit,
     onUpdateInteractiveMessage: (MessageEntity, String) -> Unit = { _, _ -> },
+    onSetVoiceRecording: (Boolean) -> Unit = {},
     onClearReply: () -> Unit
 ) {
     val context = LocalContext.current
@@ -2268,6 +2462,10 @@ private fun MinimalBottomArea(
     val recorderController = remember(context) { VoiceRecorderController(context) }
     var isRecordingVoice by remember { mutableStateOf(false) }
     var recordingSeconds by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(isRecordingVoice) {
+        onSetVoiceRecording(isRecordingVoice)
+    }
 
     // Close sticker tray or attachment tray on system Back press just like dismissing a keyboard
     BackHandler(enabled = uiState.isStickerTrayOpen || uiState.isAttachmentTrayOpen) {
@@ -2538,7 +2736,8 @@ private fun MinimalBottomArea(
                     val hasText = uiState.messageInput.isNotBlank()
                     Surface(
                         shape = RoundedCornerShape(24.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        color = Color(0xFF09090B),
+                        border = androidx.compose.foundation.BorderStroke(0.8.dp, Color(0xFF27272A)),
                         modifier = Modifier.weight(1f)
                     ) {
                         Row(

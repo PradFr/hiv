@@ -223,8 +223,35 @@ class DuoSpaceViewModel(
         }
     }
 
+    private var typingResetJob: Job? = null
+
     fun updateMessageInput(text: String) {
         _uiState.update { it.copy(messageInput = text) }
+        val code = _activeSpaceCode.value
+        val isUser1 = _uiState.value.activeUser == TestUserSlot.USER_1
+        typingResetJob?.cancel()
+        if (text.isNotBlank()) {
+            viewModelScope.launch {
+                repository.updateUserPresenceStatus(code, isUser1, "typing")
+            }
+            typingResetJob = viewModelScope.launch {
+                delay(3000L)
+                repository.updateUserPresenceStatus(code, isUser1, "Online")
+            }
+        } else {
+            viewModelScope.launch {
+                repository.updateUserPresenceStatus(code, isUser1, "Online")
+            }
+        }
+    }
+
+    fun setVoiceRecordingActive(isRecording: Boolean) {
+        val code = _activeSpaceCode.value
+        val isUser1 = _uiState.value.activeUser == TestUserSlot.USER_1
+        typingResetJob?.cancel()
+        viewModelScope.launch {
+            repository.updateUserPresenceStatus(code, isUser1, if (isRecording) "recording_voice" else "Online")
+        }
     }
 
     fun setReplyTarget(message: MessageEntity?) {
@@ -303,8 +330,11 @@ class DuoSpaceViewModel(
         val code = _activeSpaceCode.value
 
         _uiState.update { it.copy(messageInput = "", replyingTo = null) }
+        val isUser1 = state.activeUser == TestUserSlot.USER_1
+        typingResetJob?.cancel()
 
         viewModelScope.launch {
+            repository.updateUserPresenceStatus(code, isUser1, "Online")
             repository.sendMessage(
                 senderId = senderId,
                 senderName = senderName,

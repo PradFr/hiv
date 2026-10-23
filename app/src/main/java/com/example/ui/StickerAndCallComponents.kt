@@ -83,6 +83,8 @@ import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.GraphicEq
@@ -628,51 +630,27 @@ fun MessageReceiptTicks(
     onMediaOverlay: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val grayTickColor = Color(0xFF9CA3AF)
-    when {
-        isRead -> {
-            // Bold white double tick for Read
-            Surface(
-                shape = RoundedCornerShape(6.dp),
-                color = if (onMediaOverlay) Color.Transparent else Color.Black.copy(alpha = 0.28f),
-                modifier = modifier.testTag("message_tick_read")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = if (onMediaOverlay) 1.dp else 4.dp, vertical = 0.5.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "✓✓",
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = (-1.5).sp,
-                        color = Color.White
-                    )
-                }
-            }
-        }
-        isDelivered -> {
-            // Double gray tick for Sent/Delivered but not Read
-            Text(
-                text = "✓✓",
-                fontSize = 10.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = (-1.4).sp,
-                color = grayTickColor,
-                modifier = modifier.testTag("message_tick_delivered")
-            )
-        }
-        else -> {
-            // Single gray tick for Sent from your side, not yet received by partner
-            Text(
-                text = "✓",
-                fontSize = 10.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = grayTickColor,
-                modifier = modifier.testTag("message_tick_sent")
-            )
-        }
+    val tickColor = when {
+        isRead -> if (onMediaOverlay) Color(0xFF60A5FA) else MaterialTheme.colorScheme.onPrimary
+        isDelivered -> if (onMediaOverlay) Color.White.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f)
+        else -> if (onMediaOverlay) Color.White.copy(alpha = 0.5f) else MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.45f)
     }
+
+    val icon = if (isRead || isDelivered) Icons.Default.DoneAll else Icons.Default.Done
+    val tag = if (isRead) "message_tick_read" else if (isDelivered) "message_tick_delivered" else "message_tick_sent"
+
+    Icon(
+        imageVector = icon,
+        contentDescription = when {
+            isRead -> "Read"
+            isDelivered -> "Delivered"
+            else -> "Sent"
+        },
+        tint = tickColor,
+        modifier = modifier
+            .size(13.dp)
+            .testTag(tag)
+    )
 }
 
 @Composable

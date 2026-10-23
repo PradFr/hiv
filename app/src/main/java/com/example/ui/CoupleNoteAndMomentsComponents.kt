@@ -38,7 +38,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.AutoFixNormal
@@ -207,7 +210,7 @@ fun CoupleNoteBoxView(
     var showAddTextDialog by remember { mutableStateOf(false) }
     var editingTextBoxId by remember { mutableStateOf<String?>(null) }
     var newTextInput by remember { mutableStateOf("") }
-    var selectedNoteColor by remember { mutableStateOf(0xFFFFF3B0L) } // Warm Butter Sticky
+    var selectedNoteColor by remember { mutableStateOf(0x00000000L) } // Default Transparent
     var isDoodlingOnNote by remember { mutableStateOf(false) }
     var isTransformingDoodle by remember { mutableStateOf(false) }
     var selectedDoodleColorHex by remember { mutableStateOf(0xFFEC4899L) }
@@ -219,6 +222,7 @@ fun CoupleNoteBoxView(
 
     val stickyPalette = remember {
         listOf(
+            0x00000000L, // Transparent (Default / Normal centered text)
             0xFFFFF3B0L, // Warm Butter
             0xFFFFD6E0L, // Soft Rose
             0xFFC8F7DCL, // Mint Sage
@@ -273,124 +277,70 @@ fun CoupleNoteBoxView(
         }
     }
 
-    Card(
-        shape = RoundedCornerShape(26.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-        border = BorderStroke(
-            width = 1.2.dp,
-            color = if (isViewingMyNote) {
-                MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
-            } else {
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-            }
-        ),
+    Column(
         modifier = modifier
             .fillMaxWidth()
-            .testTag("couple_note_box_card")
+            .padding(horizontal = 2.dp, vertical = 2.dp)
+            .testTag("couple_note_box_card"),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Column(
+        // --- BLANK MINIMAL CANVAS SURFACE ---
+        val dotColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+        val boardBgColor = if (isViewingMyNote) {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f)
+        }
+
+        Surface(
+            shape = RoundedCornerShape(22.dp),
+            color = boardBgColor,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .height(310.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .testTag("note_canvas_surface")
         ) {
-            // --- STUDIO HEADER BAR ---
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = if (isViewingMyNote) {
-                            MaterialTheme.colorScheme.primaryContainer
-                        } else {
-                            Color(0xFFFCE7F3)
-                        },
-                        modifier = Modifier.size(40.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = if (isViewingMyNote) Icons.Default.Edit else Icons.Default.Favorite,
-                                contentDescription = null,
-                                tint = if (isViewingMyNote) {
-                                    MaterialTheme.colorScheme.onPrimaryContainer
-                                } else {
-                                    Color(0xFFDB2777)
-                                },
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(enabled = isViewingMyNote && !isDoodlingOnNote) {
+                        selectedItemId = null
                     }
-
-                    Column {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                text = if (isViewingMyNote) "My Note for $partnerName" else "$partnerName's Note Board",
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+            ) {
+                // Subtle architectural dot-grid texture
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val stepPx = 18.dp.toPx()
+                    val dotRadius = 1.1.dp.toPx()
+                    var x = stepPx
+                    while (x < size.width) {
+                        var y = stepPx
+                        while (y < size.height) {
+                            drawCircle(
+                                color = dotColor,
+                                radius = dotRadius,
+                                center = Offset(x, y)
                             )
-                            Surface(
-                                shape = RoundedCornerShape(50),
-                                color = if (isViewingMyNote) {
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                                } else {
-                                    MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f)
-                                }
-                            ) {
-                                Text(
-                                    text = if (isViewingMyNote) "EDITING" else "FOR YOU",
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    letterSpacing = 0.6.sp,
-                                    color = if (isViewingMyNote) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSecondaryContainer
-                                    },
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                )
-                            }
+                            y += stepPx
                         }
-                        Text(
-                            text = if (isViewingMyNote) {
-                                "Tap any sticky, photo, or doodle to move & resize"
-                            } else {
-                                "Left on your shared desk • Tap Flip to edit yours"
-                            },
-                            fontSize = 11.5.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        x += stepPx
                     }
                 }
 
+                // Subtle Corner Controls: Clean note button (only in My Note) & Rotate/Flip button
                 Row(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Clean Note Button: Enabled ONLY for your own note!
                     if (isViewingMyNote) {
                         Surface(
                             shape = CircleShape,
-                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f),
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
                             modifier = Modifier
-                                .size(36.dp)
+                                .size(34.dp)
                                 .clip(CircleShape)
                                 .clickable { showCleanConfirmDialog = true }
                                 .testTag("clean_my_note_button")
@@ -398,21 +348,20 @@ fun CoupleNoteBoxView(
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.DeleteOutline,
-                                    contentDescription = "Clean your note",
-                                    tint = MaterialTheme.colorScheme.onErrorContainer,
-                                    modifier = Modifier.size(18.dp)
+                                    contentDescription = "Clean note",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(17.dp)
                                 )
                             }
                         }
                     }
 
-                    // Sleek Flip Pill Button (Flipping between Partner's note and My note)
                     Surface(
-                        shape = RoundedCornerShape(50),
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        shadowElevation = 2.dp,
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
                         modifier = Modifier
-                            .clip(RoundedCornerShape(50))
+                            .size(34.dp)
+                            .clip(CircleShape)
                             .clickable {
                                 flipRotationTarget += 180f
                                 isViewingMyNote = !isViewingMyNote
@@ -422,138 +371,34 @@ fun CoupleNoteBoxView(
                             }
                             .testTag("rotate_note_box_symbol")
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
+                        Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Default.Autorenew,
-                                contentDescription = "Rotate note box to flip side",
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                contentDescription = "Rotate note to flip side",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier
-                                    .size(16.dp)
+                                    .size(17.dp)
                                     .rotate(animatedRotation)
-                            )
-                            Text(
-                                text = if (isViewingMyNote) "Partner's" else "My Note",
-                                fontSize = 11.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         }
                     }
                 }
-            }
 
-            // --- DOT-GRID STUDIO CANVAS SURFACE ---
-            val dotColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
-            val boardBgColor = if (isViewingMyNote) {
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f)
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f)
-            }
-
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = boardBgColor,
-                border = BorderStroke(
-                    width = 1.dp,
-                    color = if (isDoodlingOnNote) {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
-                    } else {
-                        MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+                // Blank canvas tranquil notice when empty
+                if (currentNote.textItems.isEmpty() && currentNote.images.isEmpty() && currentNote.doodleStrokes.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (isViewingMyNote) "Blank note • Add text, photo, or doodle below" else "Blank note from $partnerName",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                        )
                     }
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(296.dp)
-                    .clip(RoundedCornerShape(20.dp))
-                    .testTag("note_canvas_surface")
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clickable(enabled = isViewingMyNote && !isDoodlingOnNote) {
-                            selectedItemId = null
-                        }
-                ) {
-                    // Subtle Architectural Dot-Grid Texture
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        val stepPx = 18.dp.toPx()
-                        val dotRadius = 1.3.dp.toPx()
-                        var x = stepPx
-                        while (x < size.width) {
-                            var y = stepPx
-                            while (y < size.height) {
-                                drawCircle(
-                                    color = dotColor,
-                                    radius = dotRadius,
-                                    center = Offset(x, y)
-                                )
-                                y += stepPx
-                            }
-                            x += stepPx
-                        }
-                    }
-
-                    // Empty state studio illustration
-                    if (currentNote.textItems.isEmpty() && currentNote.images.isEmpty() && currentNote.doodleStrokes.isEmpty()) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(24.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(20.dp),
-                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
-                                shadowElevation = 2.dp
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
-                                        modifier = Modifier.size(44.dp)
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Icon(
-                                                imageVector = if (isViewingMyNote) Icons.Default.Edit else Icons.Default.Favorite,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(22.dp)
-                                            )
-                                        }
-                                    }
-                                    Text(
-                                        text = if (isViewingMyNote) {
-                                            "Your Canvas for $partnerName"
-                                        } else {
-                                            "No Note from $partnerName Yet"
-                                        },
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Text(
-                                        text = if (isViewingMyNote) {
-                                            "Pin sticky notes, drop Polaroid photos, or sketch a doodle below.\nDrag any item to place it or pull its corner handle to resize!"
-                                        } else {
-                                            "Tap 'My Note' in the top right to design a surprise sticky note, photo collage, or doodle for $partnerName."
-                                        },
-                                        fontSize = 12.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                    )
-                                }
-                            }
-                        }
-                    }
+                }
 
                     // 1. Render Placed Polaroid Photos (Movable & Resizable)
                     val imagesToRender = if (isViewingMyNote) myNote.images else currentNote.images
@@ -744,48 +589,39 @@ fun CoupleNoteBoxView(
                                     } else Modifier
                                 )
                         ) {
-                            Surface(
-                                shape = RoundedCornerShape(14.dp),
-                                color = Color(textBox.colorArgb),
-                                shadowElevation = if (isSelected) 8.dp else 3.dp,
-                                border = BorderStroke(
-                                    width = if (isSelected) 2.dp else 0.8.dp,
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary else Color(0xFF0F172A).copy(alpha = 0.12f)
-                                ),
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clickable(enabled = isViewingMyNote && !isDoodlingOnNote) {
-                                        selectedItemId = textBox.id
-                                    }
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(horizontal = 10.dp, vertical = 10.dp),
-                                    contentAlignment = Alignment.TopStart
-                                ) {
-                                    Text(
-                                        text = textBox.text,
-                                        fontSize = textBox.fontSizeSp.sp,
-                                        lineHeight = (textBox.fontSizeSp * 1.28f).sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = Color(0xFF1E293B),
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                        val isTransparent = textBox.colorArgb == 0x00000000L || textBox.colorArgb == 0L
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isTransparent) Color.Transparent else Color(textBox.colorArgb),
+                            shadowElevation = if (isTransparent) 0.dp else if (isSelected) 6.dp else 2.dp,
+                            border = if (isSelected) {
+                                BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                            } else if (!isTransparent) {
+                                BorderStroke(0.6.dp, Color.White.copy(alpha = 0.2f))
+                            } else null,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clickable(enabled = isViewingMyNote && !isDoodlingOnNote) {
+                                    selectedItemId = textBox.id
                                 }
-                            }
-
-                            // Subtle Translucent Top Tape Accent on Sticky Note
+                        ) {
                             Box(
                                 modifier = Modifier
-                                    .align(Alignment.TopCenter)
-                                    .offset(y = (-3).dp)
-                                    .width(36.dp)
-                                    .height(8.dp)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(Color.White.copy(alpha = 0.65f))
-                                    .border(0.5.dp, Color(0xFFCBD5E1), RoundedCornerShape(2.dp))
-                            )
+                                    .fillMaxSize()
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = textBox.text,
+                                    fontSize = textBox.fontSizeSp.sp,
+                                    lineHeight = (textBox.fontSizeSp * 1.28f).sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                    color = if (isTransparent) Color.White else Color(0xFF1E293B),
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
 
                             // If selected in "My Note": show Edit button, Delete button & Corner Resize handle
                             if (isSelected) {
@@ -1224,65 +1060,57 @@ fun CoupleNoteBoxView(
                 }
             }
 
-            // --- FLOATING STUDIO DOCK (Only available in "My Note") ---
-            if (isViewingMyNote) {
+        // --- MINIMAL ICON-ONLY ACTION BAR ---
+        if (isViewingMyNote) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
-                    modifier = Modifier.fillMaxWidth()
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    modifier = Modifier.clip(RoundedCornerShape(24.dp))
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // 1. + Sticky Note Button
+                        // 1. Text icon
                         Surface(
-                            shape = RoundedCornerShape(14.dp),
+                            shape = CircleShape,
                             color = MaterialTheme.colorScheme.surface,
-                            shadowElevation = 1.dp,
                             modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(14.dp))
+                                .size(36.dp)
+                                .clip(CircleShape)
                                 .clickable {
                                     editingTextBoxId = null
                                     newTextInput = ""
+                                    selectedNoteColor = 0x00000000L
                                     showAddTextDialog = true
                                 }
                                 .testTag("note_add_text_button")
                         ) {
-                            Row(
-                                modifier = Modifier.padding(vertical = 9.dp, horizontal = 6.dp),
-                                horizontalArrangement = Arrangement.Center,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                            Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.TextFields,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "+ Sticky",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
+                                    contentDescription = "Add text box",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
 
-                        // 2. + Polaroid Photo Button
+                        // 2. Photo icon
                         Surface(
-                            shape = RoundedCornerShape(14.dp),
+                            shape = CircleShape,
                             color = MaterialTheme.colorScheme.surface,
-                            shadowElevation = 1.dp,
                             modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(14.dp))
+                                .size(36.dp)
+                                .clip(CircleShape)
                                 .clickable {
                                     imagePickerLauncher.launch(
                                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -1290,35 +1118,23 @@ fun CoupleNoteBoxView(
                                 }
                                 .testTag("note_add_photo_button")
                         ) {
-                            Row(
-                                modifier = Modifier.padding(vertical = 9.dp, horizontal = 6.dp),
-                                horizontalArrangement = Arrangement.Center,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                            Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.AddPhotoAlternate,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "+ Photo",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
+                                    contentDescription = "Add photo",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
 
-                        // 3. Doodle Draw Toggle Button
+                        // 3. Doodle icon
                         Surface(
-                            shape = RoundedCornerShape(14.dp),
+                            shape = CircleShape,
                             color = if (isDoodlingOnNote) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
-                            shadowElevation = 1.dp,
                             modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(14.dp))
+                                .size(36.dp)
+                                .clip(CircleShape)
                                 .clickable {
                                     isDoodlingOnNote = !isDoodlingOnNote
                                     if (isDoodlingOnNote) {
@@ -1328,36 +1144,24 @@ fun CoupleNoteBoxView(
                                 }
                                 .testTag("note_toggle_doodle_button")
                         ) {
-                            Row(
-                                modifier = Modifier.padding(vertical = 9.dp, horizontal = 6.dp),
-                                horizontalArrangement = Arrangement.Center,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                            Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.Gesture,
-                                    contentDescription = null,
-                                    tint = if (isDoodlingOnNote) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = if (isDoodlingOnNote) "Drawing" else "Doodle",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isDoodlingOnNote) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                    contentDescription = "Doodle",
+                                    tint = if (isDoodlingOnNote) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
 
-                        // 4. Move / Resize Doodle Toggle Button
+                        // 4. Move/Resize Doodle icon
                         if (noteDoodleStrokes.isNotEmpty()) {
                             Surface(
-                                shape = RoundedCornerShape(14.dp),
+                                shape = CircleShape,
                                 color = if (isTransformingDoodle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
-                                shadowElevation = 1.dp,
                                 modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(14.dp))
+                                    .size(36.dp)
+                                    .clip(CircleShape)
                                     .clickable {
                                         isTransformingDoodle = !isTransformingDoodle
                                         if (isTransformingDoodle) {
@@ -1367,23 +1171,12 @@ fun CoupleNoteBoxView(
                                     }
                                     .testTag("note_move_resize_doodle_button")
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(vertical = 9.dp, horizontal = 4.dp),
-                                    horizontalArrangement = Arrangement.Center,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                                Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         imageVector = Icons.Default.OpenWith,
-                                        contentDescription = null,
-                                        tint = if (isTransformingDoodle) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(15.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(3.dp))
-                                    Text(
-                                        text = if (isTransformingDoodle) "Adjusting" else "Move Art",
-                                        fontSize = 11.5.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isTransformingDoodle) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                        contentDescription = "Move/Resize doodle",
+                                        tint = if (isTransformingDoodle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(17.dp)
                                     )
                                 }
                             }
@@ -1402,20 +1195,20 @@ fun CoupleNoteBoxView(
                 showAddTextDialog = false
                 editingTextBoxId = null
             },
-            title = { Text(if (isEditing) "Edit Sticky Note" else "New Sticky Note") },
+            title = { Text(if (isEditing) "Edit Text Box" else "New Text Box") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
                         value = newTextInput,
                         onValueChange = { newTextInput = it },
-                        placeholder = { Text("Write a sweet note or reminder…") },
+                        placeholder = { Text("Write a note, text or reminder…") },
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    // Sticky note color options
+                    // Optional background color options
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = "Sticky Paper Color",
+                            text = "Background Fill (Optional)",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1426,18 +1219,29 @@ fun CoupleNoteBoxView(
                         ) {
                             stickyPalette.forEach { colorHex ->
                                 val isSelected = selectedNoteColor == colorHex
+                                val isTrans = colorHex == 0x00000000L || colorHex == 0L
                                 Box(
                                     modifier = Modifier
                                         .size(28.dp)
                                         .clip(CircleShape)
-                                        .background(Color(colorHex))
+                                        .background(if (isTrans) Color.Transparent else Color(colorHex))
                                         .border(
                                             width = if (isSelected) 2.5.dp else 1.dp,
-                                            color = if (isSelected) MaterialTheme.colorScheme.primary else Color(0xFFCBD5E1),
+                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
                                             shape = CircleShape
                                         )
-                                        .clickable { selectedNoteColor = colorHex }
-                                )
+                                        .clickable { selectedNoteColor = colorHex },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isTrans) {
+                                        Text(
+                                            text = "Ø",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -1546,6 +1350,7 @@ fun HiveChatNavigationHub(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     val spaceCode = space?.code ?: "HIVE01"
     val user1Name = space?.creatorName ?: "Alex"
     val user2Name = space?.partnerName ?: "Sam"
@@ -1569,7 +1374,8 @@ fun HiveChatNavigationHub(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .background(Color(0xFF141416))
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         // --- 3 CHATS LIST ---
@@ -1581,15 +1387,18 @@ fun HiveChatNavigationHub(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        // 1. Main Chat Tile
+        // 1. Direct Conversation Tile with Partner ($partnerName)
         val lastMessage = messages.lastOrNull { !it.isSystemEvent }
         Card(
             shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF09090B)),
+            border = BorderStroke(0.8.dp, Color(0xFF27272A)),
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onSelectChat(SubChatDestination.MAIN_CHAT) }
+                .clickable {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onSelectChat(SubChatDestination.MAIN_CHAT)
+                }
                 .testTag("chat_tile_main")
         ) {
             Row(
@@ -1599,17 +1408,19 @@ fun HiveChatNavigationHub(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // Circular surface matching partner's pfp avatar
                 Surface(
                     shape = CircleShape,
-                    color = MaterialTheme.colorScheme.primaryContainer,
+                    color = Color(0xFF27272A),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
                     modifier = Modifier.size(46.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.ChatBubbleOutline,
-                            contentDescription = "Main Chat",
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.size(22.dp)
+                        Text(
+                            text = partnerName.take(1).uppercase(),
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
                         )
                     }
                 }
@@ -1621,7 +1432,7 @@ fun HiveChatNavigationHub(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Main Chat",
+                            text = partnerName,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
@@ -1643,17 +1454,27 @@ fun HiveChatNavigationHub(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.35f),
+                    modifier = Modifier.size(18.dp)
+                )
             }
         }
 
         // 2. My Monthly Moments Tile (Openable anytime)
         Card(
             shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF09090B)),
+            border = BorderStroke(0.8.dp, Color(0xFF27272A)),
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onSelectChat(SubChatDestination.MY_MONTHLY_MOMENTS) }
+                .clickable {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onSelectChat(SubChatDestination.MY_MONTHLY_MOMENTS)
+                }
                 .testTag("chat_tile_my_moments")
         ) {
             Row(
@@ -1665,7 +1486,8 @@ fun HiveChatNavigationHub(
             ) {
                 Surface(
                     shape = CircleShape,
-                    color = Color(0xFFFDE047).copy(alpha = 0.25f),
+                    color = Color(0xFF27272A),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
                     modifier = Modifier.size(46.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -1673,44 +1495,33 @@ fun HiveChatNavigationHub(
                             imageVector = Icons.Default.CardGiftcard,
                             contentDescription = "My Monthly Moments",
                             tint = Color(0xFFEAB308),
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
 
                 Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "My Monthly Moments",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                        ) {
-                            Text(
-                                text = "$myMomentsCount prepared",
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                            )
-                        }
-                    }
                     Text(
-                        text = "Prepare secret messages, photos, doodles & coupons for $partnerName",
+                        text = "My Monthly Moments",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Prepare secret messages, photos, doodles & coupons",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.35f),
+                    modifier = Modifier.size(18.dp)
+                )
             }
         }
 
@@ -1718,17 +1529,18 @@ fun HiveChatNavigationHub(
         Card(
             shape = RoundedCornerShape(18.dp),
             colors = CardDefaults.cardColors(
-                containerColor = if (partnerMomentsUnlocked) MaterialTheme.colorScheme.surface
-                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                containerColor = if (partnerMomentsUnlocked) Color(0xFF09090B)
+                else Color(0xFF111113)
             ),
             border = BorderStroke(
-                1.dp,
-                if (partnerMomentsUnlocked) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
-                else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                0.8.dp,
+                if (partnerMomentsUnlocked) Color(0xFF10B981).copy(alpha = 0.35f)
+                else Color(0xFF27272A)
             ),
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     if (partnerMomentsUnlocked) {
                         onSelectChat(SubChatDestination.PARTNER_MONTHLY_MOMENTS)
                     } else {
@@ -1746,8 +1558,8 @@ fun HiveChatNavigationHub(
             ) {
                 Surface(
                     shape = CircleShape,
-                    color = if (partnerMomentsUnlocked) Color(0xFF10B981).copy(alpha = 0.2f)
-                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                    color = Color(0xFF27272A),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
                     modifier = Modifier.size(46.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -1755,42 +1567,23 @@ fun HiveChatNavigationHub(
                             imageVector = if (partnerMomentsUnlocked) Icons.Default.LockOpen else Icons.Default.Lock,
                             contentDescription = "Partner Monthly Moments",
                             tint = if (partnerMomentsUnlocked) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
 
                 Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "$partnerName's Monthly Moments",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (partnerMomentsUnlocked) Color(0xFF10B981).copy(alpha = 0.15f)
-                            else MaterialTheme.colorScheme.surfaceVariant
-                        ) {
-                            Text(
-                                text = if (partnerMomentsUnlocked) "Unlocked ✨" else "Locked 🔒",
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (partnerMomentsUnlocked) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                            )
-                        }
-                    }
+                    Text(
+                        text = "$partnerName's Monthly Moments",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                     Text(
                         text = if (partnerMomentsUnlocked) {
-                            "Ready to unwrap! Tap to open $partnerName's surprises"
+                            "Ready to open"
                         } else {
-                            "Locked until month-end ($daysUntilEndOfMonth days left) • $partnerMomentsCount secrets added"
+                            "Locked until month-end ($daysUntilEndOfMonth days left)"
                         },
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1798,6 +1591,13 @@ fun HiveChatNavigationHub(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+
+                Icon(
+                    imageVector = if (partnerMomentsUnlocked) Icons.Default.LockOpen else Icons.Default.Lock,
+                    contentDescription = null,
+                    tint = if (partnerMomentsUnlocked) Color(0xFF10B981) else Color.White.copy(alpha = 0.35f),
+                    modifier = Modifier.size(18.dp)
+                )
             }
         }
 

@@ -124,6 +124,12 @@ interface DuoSpaceDao {
 
     @Query("DELETE FROM messages WHERE spaceCode = :spaceCode")
     suspend fun deleteMessagesForSpace(spaceCode: String)
+
+    @Query("UPDATE spaces SET user1Status = :status WHERE code = :code")
+    suspend fun updateUser1Status(code: String, status: String)
+
+    @Query("UPDATE spaces SET user2Status = :status WHERE code = :code")
+    suspend fun updateUser2Status(code: String, status: String)
 }
 
 @Database(

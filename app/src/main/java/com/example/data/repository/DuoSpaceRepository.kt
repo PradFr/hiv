@@ -556,6 +556,19 @@ class DuoSpaceRepository(
         dao.upsertSpace(existingSpace.copy(autoRecordCalls = enabled))
     }
 
+    suspend fun updateUserPresenceStatus(
+        spaceCode: String = DEFAULT_SPACE_CODE,
+        isUser1: Boolean,
+        status: String
+    ) {
+        val cleanCode = spaceCode.trim().uppercase().ifBlank { DEFAULT_SPACE_CODE }
+        if (isUser1) {
+            dao.updateUser1Status(cleanCode, status)
+        } else {
+            dao.updateUser2Status(cleanCode, status)
+        }
+    }
+
     suspend fun syncSpaceFromSupabase(
         spaceCode: String = DEFAULT_SPACE_CODE,
         activeUserId: String = USER_1_ID
