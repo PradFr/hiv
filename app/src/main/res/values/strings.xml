@@ -1,0 +1,24 @@
+<resources>
+    <string name="app_name">Hive</string>
+    <string name="tagline">Private 2-Person Encrypted-Code Spaces</string>
+    <string name="create_space_title">Create a New Space</string>
+    <string name="create_space_subtitle">Generate a 6-character invite code for your partner</string>
+    <string name="join_space_title">Join by Invite Code</string>
+    <string name="join_space_subtitle">Enter the 6-character code shared by Person 1</string>
+    <string name="your_display_name">Your Display Name</string>
+    <string name="space_topic_label">Space Name / Topic (Optional)</string>
+    <string name="generate_code_action">Generate Code &amp; Open Space</string>
+    <string name="enter_invite_code">6-Character Invite Code</string>
+    <string name="join_space_action">Join 2-Person Space</string>
+    <string name="recent_spaces_title">Your Duo Spaces</string>
+    <string name="empty_spaces_hint">No spaces yet. Generate a code above to start a 2-person room, or enter a partner\'s code to join.</string>
+    <string name="waiting_for_partner">Waiting for Person 2 to join with code</string>
+    <string name="capacity_full_badge">2/2 Paired</string>
+    <string name="capacity_waiting_badge">1/2 Waiting</string>
+    <string name="message_placeholder">Message your partner…</string>
+    <string name="send_message_desc">Send message</string>
+    <string name="copy_code_desc">Copy invite code</string>
+    <string name="share_code_desc">Share invite code</string>
+    <string name="supabase_schema_title">Supabase SQL Setup</string>
+    <string name="switch_seat_label">Active Identity</string>
+</resources>

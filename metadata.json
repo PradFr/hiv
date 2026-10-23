@@ -1,0 +1,6 @@
+{
+  "name": "Hive",
+  "description": "Private two-person real-time messaging spaces, encrypted media vault, and voice/video calling",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
