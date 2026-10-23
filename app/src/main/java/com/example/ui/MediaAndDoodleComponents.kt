@@ -139,7 +139,11 @@ fun FloatingDoodleToolbar(
     onClear: () -> Unit,
     onAddBottomSpace: () -> Unit,
     onDone: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isEraser: Boolean = false,
+    onToggleEraser: () -> Unit = {},
+    strokeThicknessDp: Float = 3.5f,
+    onSelectThickness: (Float) -> Unit = {}
 ) {
     Surface(
         shape = RoundedCornerShape(50),
@@ -153,16 +157,16 @@ fun FloatingDoodleToolbar(
         modifier = modifier.testTag("floating_doodle_toolbar")
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // Color Picker Dots
+            // Color Picker Dots (disabled visually when in eraser mode)
             DOODLE_PALETTE.forEach { colorHex ->
-                val selected = selectedColor == colorHex
+                val selected = !isEraser && selectedColor == colorHex
                 Box(
                     modifier = Modifier
-                        .size(if (selected) 22.dp else 16.dp)
+                        .size(if (selected) 20.dp else 15.dp)
                         .clip(CircleShape)
                         .background(Color(colorHex))
                         .border(
@@ -170,31 +174,106 @@ fun FloatingDoodleToolbar(
                             color = if (selected) MaterialTheme.colorScheme.onSurface else Color.Transparent,
                             shape = CircleShape
                         )
-                        .clickable { onSelectColor(colorHex) }
+                        .clickable {
+                            if (isEraser) onToggleEraser()
+                            onSelectColor(colorHex)
+                        }
                 )
+            }
+
+            // Divider
+            Box(
+                modifier = Modifier
+                    .height(18.dp)
+                    .width(1.dp)
+                    .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+            )
+
+            // Stroke Thickness Selector: Fine (2.5dp), Medium (6dp), Bold (12dp)
+            listOf(2.5f to 4.dp, 6f to 7.dp, 12f to 10.dp).forEach { (thickness, dotSize) ->
+                val isSelected = kotlin.math.abs(strokeThicknessDp - thickness) < 1f
+                Surface(
+                    shape = CircleShape,
+                    color = if (isSelected) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        Color.Transparent
+                    },
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .clickable { onSelectThickness(thickness) }
+                        .testTag("doodle_thickness_${thickness.toInt()}")
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Box(
+                            modifier = Modifier
+                                .size(dotSize)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isSelected) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                        )
+                    }
+                }
+            }
+
+            // Eraser Tool Button
+            Surface(
+                shape = CircleShape,
+                color = if (isEraser) {
+                    MaterialTheme.colorScheme.errorContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                },
+                border = if (isEraser) {
+                    androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.error)
+                } else null,
+                modifier = Modifier
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onToggleEraser)
+                    .testTag("doodle_eraser_button")
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Eraser tool",
+                        tint = if (isEraser) {
+                            MaterialTheme.colorScheme.onErrorContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
             }
 
             IconButton(
                 onClick = onUndo,
                 enabled = canUndo,
-                modifier = Modifier.size(28.dp)
+                modifier = Modifier.size(26.dp)
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.Undo,
                     contentDescription = "Undo stroke",
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(15.dp)
                 )
             }
 
             IconButton(
                 onClick = onClear,
                 enabled = canClear,
-                modifier = Modifier.size(28.dp)
+                modifier = Modifier.size(26.dp)
             ) {
                 Icon(
                     imageVector = Icons.Default.DeleteOutline,
                     contentDescription = "Clear screen doodle",
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(15.dp)
                 )
             }
 
@@ -202,7 +281,7 @@ fun FloatingDoodleToolbar(
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
-                    .size(28.dp)
+                    .size(26.dp)
                     .clip(CircleShape)
                     .clickable(onClick = onDone)
                     .testTag("close_doodle_mode_button")
@@ -212,7 +291,7 @@ fun FloatingDoodleToolbar(
                         imageVector = Icons.Default.Check,
                         contentDescription = "Done drawing",
                         tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(15.dp)
+                        modifier = Modifier.size(14.dp)
                     )
                 }
             }

@@ -214,7 +214,12 @@ class DuoSpaceViewModel(
     fun switchActiveUser(target: TestUserSlot) {
         _uiState.update { it.copy(activeUser = target, replyingTo = null) }
         viewModelScope.launch {
-            repository.markAllReadForUser(target.userId, _activeSpaceCode.value)
+            val code = _activeSpaceCode.value
+            val currentSpace = repository.getSpace(code)
+            if (target == TestUserSlot.USER_2 && currentSpace != null && currentSpace.partnerId == null) {
+                repository.joinExistingSpace(code, currentSpace.partnerName ?: "Partner")
+            }
+            repository.markAllReadForUser(target.userId, code)
         }
     }
 

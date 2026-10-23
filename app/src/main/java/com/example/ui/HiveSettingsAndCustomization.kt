@@ -354,6 +354,13 @@ object HiveSettingsPersistence {
         notifyUpdated()
     }
 
+    fun setLocalUserSlot(context: Context, slot: TestUserSlot) {
+        prefs(context).edit()
+            .putString("local_user_slot", slot.name)
+            .apply()
+        notifyUpdated()
+    }
+
     fun leaveOrResetSpace(context: Context) {
         prefs(context).edit()
             .putBoolean("is_space_paired", false)
@@ -1359,6 +1366,51 @@ fun HiveDashboardSettingsDialog(
                                     Text("Join", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
+
+                            // One-tap copy Supabase SQL setup script
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                        Text(
+                                            text = "Supabase Database Setup",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = "Run this in your Supabase SQL Editor if cloud sync shows PGRST205 table errors",
+                                            fontSize = 10.5.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Button(
+                                        onClick = {
+                                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                                            cm?.setPrimaryClip(
+                                                android.content.ClipData.newPlainText(
+                                                    "Supabase SQL Schema",
+                                                    com.example.data.remote.SupabaseClientManager.SUPABASE_SQL_SCHEMA
+                                                )
+                                            )
+                                            Toast.makeText(context, "Copied Supabase SQL Setup to Clipboard!", Toast.LENGTH_LONG).show()
+                                        },
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Text("Copy SQL", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -2351,6 +2403,51 @@ fun HiveSpaceOnboardingScreen(
                                 fontWeight = FontWeight.Bold
                             )
                         }
+                    }
+                }
+            }
+
+            // Step 3: Cloud Database Sync Helper
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(
+                            text = "Supabase Cloud Sync Setup",
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "If you encounter table sync errors (PGRST205), copy and execute the SQL schema in your Supabase project's SQL Editor.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                            cm?.setPrimaryClip(
+                                android.content.ClipData.newPlainText(
+                                    "Supabase SQL Schema",
+                                    com.example.data.remote.SupabaseClientManager.SUPABASE_SQL_SCHEMA
+                                )
+                            )
+                            Toast.makeText(context, "Copied Supabase SQL Setup Script!", Toast.LENGTH_LONG).show()
+                        },
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Copy SQL", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }

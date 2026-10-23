@@ -75,6 +75,8 @@ class DuoSpaceRepository(
     fun observeMessages(spaceCode: String = DEFAULT_SPACE_CODE): Flow<List<MessageEntity>> =
         dao.observeMessagesForSpace(spaceCode)
 
+    suspend fun getSpace(code: String): SpaceEntity? = dao.getSpaceByCode(code.trim().uppercase().ifBlank { DEFAULT_SPACE_CODE })
+
     suspend fun ensureSpaceInitialized(
         spaceCode: String = DEFAULT_SPACE_CODE,
         creatorName: String = "You",
@@ -118,6 +120,27 @@ class DuoSpaceRepository(
                     }
                 } catch (e: Exception) {
                     Log.w("DuoSpaceRepo", "Initial space cloud sync skipped: ${e.message}")
+                }
+            }
+        } else if (existing.partnerId == null && !partnerName.isNullOrBlank()) {
+            val updated = existing.copy(
+                partnerId = USER_2_ID,
+                partnerName = partnerName.trim(),
+                lastUpdatedAt = System.currentTimeMillis()
+            )
+            dao.upsertSpace(updated)
+            supabaseClient.restService?.let { api ->
+                try {
+                    api.updateSpace(
+                        codeFilter = "eq.$cleanCode",
+                        patch = SupabaseSpacePatchDto(
+                            partnerId = USER_2_ID,
+                            partnerName = partnerName.trim(),
+                            lastUpdatedAtMs = System.currentTimeMillis()
+                        )
+                    )
+                } catch (e: Exception) {
+                    Log.w("DuoSpaceRepo", "Partner connect cloud sync deferred: ${e.message}")
                 }
             }
         }
@@ -563,6 +586,21 @@ class DuoSpaceRepository(
                     lastUpdatedAt = maxOf(localSpace.lastUpdatedAt, remoteSpace.lastUpdatedAtMs)
                 )
                 dao.upsertSpace(mergedSpace)
+            } else if (remoteSpace != null && localSpace == null) {
+                val mergedTopic = encodeWatermarksIntoTopic(watermarks)
+                val newSpace = SpaceEntity(
+                    code = remoteSpace.code,
+                    topic = mergedTopic,
+                    creatorId = remoteSpace.creatorId,
+                    creatorName = remoteSpace.creatorName,
+                    partnerId = remoteSpace.partnerId,
+                    partnerName = remoteSpace.partnerName,
+                    extraBottomSpaceDp = 0,
+                    createdAt = remoteSpace.createdAtMs,
+                    lastMessagePreview = remoteSpace.lastMessagePreview,
+                    lastUpdatedAt = remoteSpace.lastUpdatedAtMs
+                )
+                dao.upsertSpace(newSpace)
             }
 
             // 2. Sync Messages and compute accurate 3-state delivery & read flags

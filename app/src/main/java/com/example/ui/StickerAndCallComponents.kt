@@ -34,6 +34,9 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -873,6 +876,17 @@ fun DuoCallOverlay(
 
     // Soundboard panel toggle + user clips configured in Settings (Shared + Personal)
     var isSoundboardOpen by remember { mutableStateOf(false) }
+
+    // Auto-hide call controls: hides after 4.5 seconds of inactivity and reappears on tap
+    var isCallUiControlsVisible by remember { mutableStateOf(true) }
+
+    LaunchedEffect(isCallUiControlsVisible, dockSwipeStage, isSoundboardOpen) {
+        if (isCallUiControlsVisible && dockSwipeStage == DockSwipeStage.COLLAPSED && !isSoundboardOpen) {
+            delay(4500L)
+            isCallUiControlsVisible = false
+        }
+    }
+
     var customSoundboardClips by remember(activeUser, isSoundboardOpen) {
         mutableStateOf(HiveSettingsPersistence.loadSoundboardClips(context, activeUser))
     }
@@ -1170,176 +1184,188 @@ fun DuoCallOverlay(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // 1. Discord-Style Top Stage Header Bar
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            // 1. Discord-Style Top Stage Header Bar (Auto-hides, tap screen to toggle)
+            AnimatedVisibility(
+                visible = isCallUiControlsVisible,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
             ) {
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Connection & Timer Pill
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = DiscordTileSurface,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, DiscordDockBorder)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(7.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (callSession.isConnected) DiscordGreen else Color(0xFFFBBF24)
-                                    )
-                            )
-                            Text(
-                                text = if (callSession.isConnected) {
-                                    "Voice Connected • $formattedTimer"
-                                } else {
-                                    "Ringing $partnerName…"
-                                },
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color.White
-                            )
-                        }
-                    }
-
-                    // Discord LIVE Pill when Screen Sharing
-                    if (callSession.isScreenSharing) {
+                        // Connection & Timer Pill
                         Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = DiscordRed
-                        ) {
-                            Text(
-                                text = "LIVE",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-
-                    // Recording Pill
-                    if (callSession.isRecording) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = DiscordRed.copy(alpha = 0.2f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, DiscordRed)
+                            shape = RoundedCornerShape(12.dp),
+                            color = DiscordTileSurface,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, DiscordDockBorder)
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                horizontalArrangement = Arrangement.spacedBy(7.dp)
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .size(6.dp)
+                                        .size(8.dp)
                                         .clip(CircleShape)
-                                        .background(DiscordRed)
+                                        .background(
+                                            if (callSession.isConnected) DiscordGreen else Color(0xFFFBBF24)
+                                        )
                                 )
                                 Text(
-                                    text = "REC",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFFFCA5A5)
+                                    text = if (callSession.isConnected) {
+                                        "Voice Connected • $formattedTimer"
+                                    } else {
+                                        "Ringing $partnerName…"
+                                    },
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color.White
                                 )
                             }
                         }
-                    }
-                }
 
-                // Top-Right Action Icons:
-                // 1) Audio Output Selector (defaults to Bluetooth / Headset)
-                // 2) Open Chat (minimizes call to floating box + top swipe-down banner)
-                // 3) Perspective Switcher
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    // Audio Output Route Selector Pill Button (Displays Bluetooth / Headset / Speaker / Phone)
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = DiscordTileSurface,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, DiscordDockBorder),
-                        modifier = Modifier
-                            .height(34.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable { showAudioOutputDialog = true }
-                            .testTag("call_audio_output_button")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            Icon(
-                                imageVector = iconForAudioRoute(selectedAudioRoute),
-                                contentDescription = selectedAudioRoute.label,
-                                tint = if (selectedAudioRoute == CallAudioRoute.BLUETOOTH ||
-                                    selectedAudioRoute == CallAudioRoute.HEADSET
+                        // Discord LIVE Pill when Screen Sharing
+                        if (callSession.isScreenSharing) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = DiscordRed
+                            ) {
+                                Text(
+                                    text = "LIVE",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+
+                        // Recording Pill
+                        if (callSession.isRecording) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = DiscordRed.copy(alpha = 0.2f),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, DiscordRed)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
-                                    DiscordBlurple
-                                } else {
-                                    Color.White
-                                },
-                                modifier = Modifier.size(16.dp)
-                            )
-                            val activeRouteDisplayName = audioRouteOptions
-                                .firstOrNull { it.route == selectedAudioRoute }
-                                ?.displayName
-                                ?: selectedAudioRoute.label
-                            Text(
-                                text = activeRouteDisplayName,
-                                fontSize = 11.5.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color.White,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(DiscordRed)
+                                    )
+                                    Text(
+                                        text = "REC",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFFCA5A5)
+                                    )
+                                }
+                            }
                         }
                     }
 
-                    // Open Chat Icon Button -> Minimizes call to ONLY the top pull-down bar & opens Chat
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = DiscordTileSurface,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, DiscordDockBorder),
-                        modifier = Modifier
-                            .size(34.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable {
-                                onOpenChatFromCall()
-                                minimizeMode = CallMinimizeMode.TOP_SWIPE_BAR
-                            }
-                            .testTag("call_minimize_to_chat_button")
+                    // Top-Right Action Icons:
+                    // 1) Audio Output Selector (defaults to Bluetooth / Headset)
+                    // 2) Open Chat (minimizes call to floating box + top swipe-down banner)
+                    // 3) Perspective Switcher
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Default.ChatBubbleOutline,
-                                contentDescription = "Open chat",
-                                tint = Color.White,
-                                modifier = Modifier.size(16.dp)
-                            )
+                        // Audio Output Route Selector Pill Button (Displays Bluetooth / Headset / Speaker / Phone)
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DiscordTileSurface,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, DiscordDockBorder),
+                            modifier = Modifier
+                                .height(34.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { showAudioOutputDialog = true }
+                                .testTag("call_audio_output_button")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = iconForAudioRoute(selectedAudioRoute),
+                                    contentDescription = selectedAudioRoute.label,
+                                    tint = if (selectedAudioRoute == CallAudioRoute.BLUETOOTH ||
+                                        selectedAudioRoute == CallAudioRoute.HEADSET
+                                    ) {
+                                        DiscordBlurple
+                                    } else {
+                                        Color.White
+                                    },
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                val activeRouteDisplayName = audioRouteOptions
+                                    .firstOrNull { it.route == selectedAudioRoute }
+                                    ?.displayName
+                                    ?: selectedAudioRoute.label
+                                Text(
+                                    text = activeRouteDisplayName,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        // Open Chat Icon Button -> Minimizes call to ONLY the top pull-down bar & opens Chat
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DiscordTileSurface,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, DiscordDockBorder),
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    onOpenChatFromCall()
+                                    minimizeMode = CallMinimizeMode.TOP_SWIPE_BAR
+                                }
+                                .testTag("call_minimize_to_chat_button")
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.ChatBubbleOutline,
+                                    contentDescription = "Open chat",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
                         }
                     }
                 }
             }
 
-            // 2. Center Discord-Style Stage Area (Double-Tap Any Block for Full Stage, Automatic on Video Call)
+            // 2. Center Discord-Style Stage Area (Tap anywhere to toggle controls, Double-Tap Any Block for Full Stage)
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(vertical = 10.dp)
+                    .padding(vertical = if (isCallUiControlsVisible) 10.dp else 0.dp)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        isCallUiControlsVisible = !isCallUiControlsVisible
+                    }
             ) {
                 Column(
                     modifier = Modifier.fillMaxSize(),
@@ -1758,8 +1784,13 @@ fun DuoCallOverlay(
                 }
             }
 
-            // 3. Progressive 2-Stage Swipe-Up Discord Control Dock + Soundboard
-            Surface(
+            // 3. Progressive 2-Stage Swipe-Up Discord Control Dock + Soundboard (Auto-hides, tap screen to reveal)
+            AnimatedVisibility(
+                visible = isCallUiControlsVisible,
+                enter = fadeIn() + slideInVertically { it },
+                exit = fadeOut() + slideOutVertically { it }
+            ) {
+                Surface(
                 shape = RoundedCornerShape(28.dp),
                 color = DiscordTileSurface,
                 border = androidx.compose.foundation.BorderStroke(1.dp, DiscordDockBorder),
@@ -2058,6 +2089,7 @@ fun DuoCallOverlay(
                 }
             }
         }
+    }
     }
 
     if (showAudioOutputDialog) {

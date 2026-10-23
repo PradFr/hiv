@@ -54,10 +54,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.EmojiEmotions
@@ -65,12 +67,16 @@ import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -80,6 +86,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -126,6 +133,7 @@ import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.ContextCompat
 import com.example.data.local.MessageEntity
 import com.example.data.local.MessageType
+import com.example.data.local.MonthlyMomentsPersistence
 import com.example.data.local.SpaceEntity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -133,6 +141,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
@@ -193,8 +202,23 @@ fun ChatSpaceScreen(
     var studioInitialBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var studioInitialCaption by remember { mutableStateOf("") }
 
+    var activeSubChat by remember { mutableStateOf<SubChatDestination?>(null) }
+
     BackHandler(
-        enabled = onBackToDashboard != null &&
+        enabled = activeSubChat != null &&
+            uiState.activeCall == null &&
+            !uiState.isDoodleModeActive &&
+            !uiState.isStickerTrayOpen &&
+            !uiState.isAttachmentTrayOpen &&
+            !uiState.isCameraStudioOpen &&
+            studioInitialBitmap == null
+    ) {
+        activeSubChat = null
+    }
+
+    BackHandler(
+        enabled = activeSubChat == null &&
+            onBackToDashboard != null &&
             uiState.activeCall == null &&
             !uiState.isDoodleModeActive &&
             !uiState.isStickerTrayOpen &&
@@ -205,29 +229,234 @@ fun ChatSpaceScreen(
         onBackToDashboard?.invoke()
     }
 
+    val context = LocalContext.current
+    val spaceCode = space?.code ?: "HIVE01"
     val user1Name = space?.creatorName ?: "Alex"
     val user2Name = space?.partnerName ?: "Sam"
     val activeUserName = if (uiState.activeUser == TestUserSlot.USER_1) user1Name else user2Name
     val partnerName = if (uiState.activeUser == TestUserSlot.USER_1) user2Name else user1Name
+    val partnerSlot = if (uiState.activeUser == TestUserSlot.USER_1) TestUserSlot.USER_2 else TestUserSlot.USER_1
 
-    val unreadForUser1 = remember(messages) {
-        messages.count { !it.isRead && !it.isSystemEvent && it.senderId != TestUserSlot.USER_1.userId }
-    }
-    val unreadForUser2 = remember(messages) {
-        messages.count { !it.isRead && !it.isSystemEvent && it.senderId != TestUserSlot.USER_2.userId }
-    }
-
-    val allPinnedMessages = remember(messages) {
-        messages.filter { it.isPinned && it.messageType != MessageType.DOODLE }
+    val isMonthlyMoments = activeSubChat == SubChatDestination.MY_MONTHLY_MOMENTS ||
+        activeSubChat == SubChatDestination.PARTNER_MONTHLY_MOMENTS
+    val momentsTargetSlot = if (activeSubChat == SubChatDestination.PARTNER_MONTHLY_MOMENTS) {
+        partnerSlot
+    } else {
+        uiState.activeUser
     }
 
-    val latestPinnedMessage = remember(allPinnedMessages, space?.pinnedMessageId) {
+    var momentMessagesState by remember(spaceCode, momentsTargetSlot, activeSubChat) {
+        mutableStateOf(
+            if (isMonthlyMoments) {
+                MonthlyMomentsPersistence.loadMomentMessages(context, spaceCode, momentsTargetSlot)
+            } else {
+                emptyList()
+            }
+        )
+    }
+    var showClearMonthlyMomentsDialog by remember { mutableStateOf(false) }
+
+    val effectiveMessages = if (isMonthlyMoments) momentMessagesState else messages
+
+    val effectiveOnSendMessage: () -> Unit = {
+        if (isMonthlyMoments) {
+            val content = uiState.messageInput.trim()
+            if (content.isNotEmpty()) {
+                val replyTarget = uiState.replyingTo
+                val newMsg = MessageEntity(
+                    id = UUID.randomUUID().toString(),
+                    spaceCode = spaceCode,
+                    senderId = uiState.activeUser.userId,
+                    senderName = activeUserName,
+                    content = content,
+                    messageType = MessageType.TEXT,
+                    replyToId = replyTarget?.id,
+                    replyToPreview = replyTarget?.let { "${it.senderName}: ${it.content.take(48)}" },
+                    isDelivered = true,
+                    isRead = true,
+                    createdAt = System.currentTimeMillis()
+                )
+                MonthlyMomentsPersistence.saveMomentMessage(context, spaceCode, momentsTargetSlot, newMsg)
+                momentMessagesState = MonthlyMomentsPersistence.loadMomentMessages(context, spaceCode, momentsTargetSlot)
+                onUpdateMessageInput("")
+                onSelectReply(null)
+            }
+        } else {
+            onSendMessage()
+        }
+    }
+
+    val effectiveOnSendVoiceMessage: (String, Int, String) -> Unit = { filePath, durationSec, waveformCsv ->
+        if (isMonthlyMoments) {
+            val mins = durationSec / 60
+            val secs = durationSec % 60
+            val durationLabel = String.format(Locale.getDefault(), "%d:%02d", mins, secs)
+            val meta = "$filePath|$durationSec|$waveformCsv"
+            val replyTarget = uiState.replyingTo
+            val newMsg = MessageEntity(
+                id = UUID.randomUUID().toString(),
+                spaceCode = spaceCode,
+                senderId = uiState.activeUser.userId,
+                senderName = activeUserName,
+                content = durationLabel,
+                messageType = MessageType.VOICE,
+                mediaMeta = meta,
+                replyToId = replyTarget?.id,
+                replyToPreview = replyTarget?.let { "${it.senderName}: ${it.content.take(48)}" },
+                isDelivered = true,
+                isRead = true,
+                createdAt = System.currentTimeMillis()
+            )
+            MonthlyMomentsPersistence.saveMomentMessage(context, spaceCode, momentsTargetSlot, newMsg)
+            momentMessagesState = MonthlyMomentsPersistence.loadMomentMessages(context, spaceCode, momentsTargetSlot)
+            onSelectReply(null)
+        } else {
+            onSendVoiceMessage(filePath, durationSec, waveformCsv)
+        }
+    }
+
+    val effectiveOnSendStickerMessage: (String, String, String, Long) -> Unit = { stickerId, emoji, caption, bgColorHex ->
+        if (isMonthlyMoments) {
+            val meta = "$stickerId|$emoji|$caption|$bgColorHex"
+            val replyTarget = uiState.replyingTo
+            val newMsg = MessageEntity(
+                id = UUID.randomUUID().toString(),
+                spaceCode = spaceCode,
+                senderId = uiState.activeUser.userId,
+                senderName = activeUserName,
+                content = if (caption.isNotBlank()) "$emoji $caption" else emoji,
+                messageType = MessageType.STICKER,
+                mediaMeta = meta,
+                replyToId = replyTarget?.id,
+                replyToPreview = replyTarget?.let { "${it.senderName}: ${it.content.take(48)}" },
+                isDelivered = true,
+                isRead = true,
+                createdAt = System.currentTimeMillis()
+            )
+            MonthlyMomentsPersistence.saveMomentMessage(context, spaceCode, momentsTargetSlot, newMsg)
+            momentMessagesState = MonthlyMomentsPersistence.loadMomentMessages(context, spaceCode, momentsTargetSlot)
+            onSelectReply(null)
+        } else {
+            onSendStickerMessage(stickerId, emoji, caption, bgColorHex)
+        }
+    }
+
+    val effectiveOnSendRichAttachment: (String, String, String) -> Unit = { content, msgType, mediaMeta ->
+        if (isMonthlyMoments) {
+            val replyTarget = uiState.replyingTo
+            val newMsg = MessageEntity(
+                id = UUID.randomUUID().toString(),
+                spaceCode = spaceCode,
+                senderId = uiState.activeUser.userId,
+                senderName = activeUserName,
+                content = content,
+                messageType = msgType,
+                mediaMeta = mediaMeta,
+                replyToId = replyTarget?.id,
+                replyToPreview = replyTarget?.let { "${it.senderName}: ${it.content.take(48)}" },
+                isDelivered = true,
+                isRead = true,
+                createdAt = System.currentTimeMillis()
+            )
+            MonthlyMomentsPersistence.saveMomentMessage(context, spaceCode, momentsTargetSlot, newMsg)
+            momentMessagesState = MonthlyMomentsPersistence.loadMomentMessages(context, spaceCode, momentsTargetSlot)
+            onSelectReply(null)
+            onToggleAttachmentTray(false)
+            onToggleCameraStudio(false)
+        } else {
+            onSendRichAttachment(content, msgType, mediaMeta)
+        }
+    }
+
+    val effectiveOnUpdateInteractiveMessage: (MessageEntity, String, String?) -> Unit = { msg, newContent, newMeta ->
+        if (isMonthlyMoments) {
+            val updated = momentMessagesState.map {
+                if (it.id == msg.id) it.copy(content = newContent, mediaMeta = newMeta) else it
+            }
+            MonthlyMomentsPersistence.saveAllMomentMessages(context, spaceCode, momentsTargetSlot, updated)
+            momentMessagesState = updated
+        } else {
+            onUpdateInteractiveMessage(msg, newContent, newMeta)
+        }
+    }
+
+    val effectiveOnToggleReaction: (MessageEntity, String) -> Unit = { msg, emoji ->
+        if (isMonthlyMoments) {
+            val currentList = msg.reaction.orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+            if (currentList.contains(emoji)) currentList.remove(emoji) else currentList.add(emoji)
+            val newReaction = currentList.joinToString(",").ifEmpty { null }
+            val updated = momentMessagesState.map {
+                if (it.id == msg.id) it.copy(reaction = newReaction) else it
+            }
+            MonthlyMomentsPersistence.saveAllMomentMessages(context, spaceCode, momentsTargetSlot, updated)
+            momentMessagesState = updated
+        } else {
+            onToggleReaction(msg, emoji)
+        }
+    }
+
+    val effectiveOnReplaceReaction: (MessageEntity, String) -> Unit = { msg, emoji ->
+        if (isMonthlyMoments) {
+            val updated = momentMessagesState.map {
+                if (it.id == msg.id) it.copy(reaction = emoji) else it
+            }
+            MonthlyMomentsPersistence.saveAllMomentMessages(context, spaceCode, momentsTargetSlot, updated)
+            momentMessagesState = updated
+        } else {
+            onReplaceReaction(msg, emoji)
+        }
+    }
+
+    val effectiveOnTogglePinMessage: (MessageEntity) -> Unit = { msg ->
+        if (isMonthlyMoments) {
+            val updated = momentMessagesState.map {
+                if (it.id == msg.id) it.copy(isPinned = !it.isPinned) else it
+            }
+            MonthlyMomentsPersistence.saveAllMomentMessages(context, spaceCode, momentsTargetSlot, updated)
+            momentMessagesState = updated
+        } else {
+            onTogglePinMessage(msg)
+        }
+    }
+
+    val effectiveOnUnpinMessage: () -> Unit = {
+        if (isMonthlyMoments) {
+            val updated = momentMessagesState.map { it.copy(isPinned = false) }
+            MonthlyMomentsPersistence.saveAllMomentMessages(context, spaceCode, momentsTargetSlot, updated)
+            momentMessagesState = updated
+        } else {
+            onUnpinMessage()
+        }
+    }
+
+    val effectiveOnUpdateScreenDoodle: (String?, Int) -> Unit = { doodleData, extraBottomSpaceDp ->
+        if (isMonthlyMoments) {
+            MonthlyMomentsPersistence.saveMomentDoodle(context, spaceCode, momentsTargetSlot, doodleData, extraBottomSpaceDp)
+        } else {
+            onUpdateScreenDoodle(doodleData, extraBottomSpaceDp)
+        }
+    }
+
+    val unreadForUser1 = remember(effectiveMessages) {
+        effectiveMessages.count { !it.isRead && !it.isSystemEvent && it.senderId != TestUserSlot.USER_1.userId }
+    }
+    val unreadForUser2 = remember(effectiveMessages) {
+        effectiveMessages.count { !it.isRead && !it.isSystemEvent && it.senderId != TestUserSlot.USER_2.userId }
+    }
+
+    val allPinnedMessages = remember(effectiveMessages) {
+        effectiveMessages.filter { it.isPinned && it.messageType != MessageType.DOODLE }
+    }
+
+    val latestPinnedMessage = remember(allPinnedMessages, space?.pinnedMessageId, isMonthlyMoments) {
         allPinnedMessages.lastOrNull()
-            ?: messages.firstOrNull { it.id == space?.pinnedMessageId && it.messageType != MessageType.DOODLE }
+            ?: if (!isMonthlyMoments) {
+                effectiveMessages.firstOrNull { it.id == space?.pinnedMessageId && it.messageType != MessageType.DOODLE }
+            } else null
     }
 
-    val callHistoryMessages = remember(messages) {
-        messages.filter { it.messageType == MessageType.CALL_LOG }
+    val callHistoryMessages = remember(effectiveMessages) {
+        effectiveMessages.filter { it.messageType == MessageType.CALL_LOG }
     }
 
     // Three-dot menu states
@@ -238,12 +467,12 @@ fun ChatSpaceScreen(
     var showExportMarkdownDialog by remember { mutableStateOf(false) }
 
     // Filtered messages when search bar is open
-    val displayedMessages = remember(messages, isSearchBarVisible, searchQuery) {
+    val displayedMessages = remember(effectiveMessages, isSearchBarVisible, searchQuery) {
         val q = searchQuery.trim()
         if (!isSearchBarVisible || q.isEmpty()) {
-            messages
+            effectiveMessages
         } else {
-            messages.filter { msg ->
+            effectiveMessages.filter { msg ->
                 msg.messageType != MessageType.DOODLE &&
                     (msg.content.contains(q, ignoreCase = true) ||
                         msg.senderName.contains(q, ignoreCase = true))
@@ -251,15 +480,20 @@ fun ChatSpaceScreen(
         }
     }
 
-    // Stable in-memory strokes list that NEVER resets when Room emits or when starting a new stroke
+    // Stable in-memory strokes list that loads per chat destination (Main Chat vs Monthly Moments)
     val strokes = remember { mutableStateListOf<DoodleStroke>() }
-    var hasLoadedInitialStrokes by remember { mutableStateOf(false) }
-    LaunchedEffect(space?.screenDoodleData) {
-        if (!hasLoadedInitialStrokes && space != null) {
-            hasLoadedInitialStrokes = true
-            val decoded = DoodleSerializer.decode(space.screenDoodleData)
-            if (decoded.isNotEmpty() && strokes.isEmpty()) {
-                strokes.addAll(decoded)
+    var loadedDoodleSubChat by remember { mutableStateOf<SubChatDestination?>(null) }
+    LaunchedEffect(activeSubChat, space?.screenDoodleData, momentsTargetSlot) {
+        if (activeSubChat != null && loadedDoodleSubChat != activeSubChat) {
+            loadedDoodleSubChat = activeSubChat
+            strokes.clear()
+            if (isMonthlyMoments) {
+                val (doodleRaw, _) = MonthlyMomentsPersistence.loadMomentDoodle(context, spaceCode, momentsTargetSlot)
+                val decoded = DoodleSerializer.decode(doodleRaw)
+                if (decoded.isNotEmpty()) strokes.addAll(decoded)
+            } else if (space != null) {
+                val decoded = DoodleSerializer.decode(space.screenDoodleData)
+                if (decoded.isNotEmpty()) strokes.addAll(decoded)
             }
         }
     }
@@ -267,6 +501,8 @@ fun ChatSpaceScreen(
     val activeStrokePointsDp = remember { mutableStateListOf<Offset>() }
     var selectedDoodleColor by remember { mutableStateOf(DOODLE_PALETTE[0]) }
     val currentColorState by rememberUpdatedState(selectedDoodleColor)
+    var strokeThicknessDp by remember { mutableFloatStateOf(3.5f) }
+    var isEraserMode by remember { mutableStateOf(false) }
 
     var messagesContentHeightDp by remember { mutableFloatStateOf(0f) }
     val currentMessagesHeightState by rememberUpdatedState(messagesContentHeightDp)
@@ -286,7 +522,7 @@ fun ChatSpaceScreen(
         if (!uiState.isDoodleModeActive) {
             val updatedSpace = computeUsedBottomSpaceDp(strokes, messagesContentHeightDp)
             tempDoodleAddedSpaceDp = updatedSpace
-            onUpdateScreenDoodle(
+            effectiveOnUpdateScreenDoodle(
                 DoodleSerializer.encode(strokes).ifEmpty { null },
                 updatedSpace
             )
@@ -299,11 +535,60 @@ fun ChatSpaceScreen(
     var activeContextMessageId by remember { mutableStateOf<String?>(null) }
     var openEmojiPickerDirectly by remember { mutableStateOf(false) }
 
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty() && !uiState.isDoodleModeActive) {
+    LaunchedEffect(effectiveMessages.size, activeSubChat) {
+        if (effectiveMessages.isNotEmpty() && !uiState.isDoodleModeActive) {
             delay(60)
             scrollState.animateScrollTo(scrollState.maxValue)
         }
+    }
+
+    // --- Sub-Chat Navigation Router ---
+    if (activeSubChat == null) {
+        Scaffold(
+            contentWindowInsets = WindowInsets.safeDrawing,
+            containerColor = MaterialTheme.colorScheme.background,
+            topBar = {
+                MinimalHeaderBar(
+                    activeUser = uiState.activeUser,
+                    user1Name = user1Name,
+                    user2Name = user2Name,
+                    unreadForUser1 = unreadForUser1,
+                    unreadForUser2 = unreadForUser2,
+                    pinnedCount = allPinnedMessages.size,
+                    callCount = callHistoryMessages.size,
+                    autoRecordCalls = space?.autoRecordCalls == true,
+                    onSwitchUser = onSwitchUser,
+                    onStartCall = { onStartCall(CallMode.VOICE) },
+                    onOpenSearch = {
+                        isSearchBarVisible = !isSearchBarVisible
+                        if (!isSearchBarVisible) searchQuery = ""
+                    },
+                    onOpenPinnedMessages = { showPinnedDialog = true },
+                    onOpenCallHistory = { showCallHistoryDialog = true },
+                    onToggleAutoRecordCalls = {
+                        onSetAutoRecordCalls(!(space?.autoRecordCalls == true))
+                    },
+                    onOpenExportMarkdown = { showExportMarkdownDialog = true },
+                    onBackToDashboard = onBackToDashboard
+                )
+            }
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                HiveChatNavigationHub(
+                    activeUser = uiState.activeUser,
+                    space = space,
+                    messages = messages,
+                    onSelectChat = { dest -> activeSubChat = dest },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+        return
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -333,7 +618,21 @@ fun ChatSpaceScreen(
                             onSetAutoRecordCalls(!(space?.autoRecordCalls == true))
                         },
                         onOpenExportMarkdown = { showExportMarkdownDialog = true },
-                        onBackToDashboard = onBackToDashboard
+                        onBackToDashboard = { activeSubChat = null },
+                        headerTitleOverride = when (activeSubChat) {
+                            SubChatDestination.MY_MONTHLY_MOMENTS -> "My Monthly Moments"
+                            SubChatDestination.PARTNER_MONTHLY_MOMENTS -> "$partnerName's Monthly Moments"
+                            else -> null
+                        },
+                        headerSubtitleOverride = when (activeSubChat) {
+                            SubChatDestination.MY_MONTHLY_MOMENTS -> "Private vault for $partnerName • Unlocks month-end"
+                            SubChatDestination.PARTNER_MONTHLY_MOMENTS -> "Unwrapped monthly moments for you ✨"
+                            else -> null
+                        },
+                        showCallButton = !isMonthlyMoments,
+                        onClearMonthlyMoments = if (isMonthlyMoments) {
+                            { showClearMonthlyMomentsDialog = true }
+                        } else null
                     )
 
                     // Inline Search Bar (opened from 3-dot menu)
@@ -350,7 +649,7 @@ fun ChatSpaceScreen(
                     }
 
                     // Pinned Message Banner (click to view all pinned messages)
-                    AnimatedVisibility(visible = latestPinnedMessage != null || !space?.pinnedNote.isNullOrBlank()) {
+                    AnimatedVisibility(visible = latestPinnedMessage != null || (!isMonthlyMoments && !space?.pinnedNote.isNullOrBlank())) {
                         val textToShow = latestPinnedMessage?.let { msg ->
                             val preview = when (msg.messageType) {
                                 MessageType.VOICE -> "🎤 Voice message (${msg.content})"
@@ -365,7 +664,7 @@ fun ChatSpaceScreen(
                             text = textToShow,
                             pinnedCount = allPinnedMessages.size,
                             onOpenAllPinned = { showPinnedDialog = true },
-                            onUnpin = onUnpinMessage
+                            onUnpin = effectiveOnUnpinMessage
                         )
                     }
                 }
@@ -376,12 +675,12 @@ fun ChatSpaceScreen(
                     activeUserName = activeUserName,
                     user1Name = user1Name,
                     user2Name = user2Name,
-                    messages = messages,
+                    messages = effectiveMessages,
                     onUpdateMessageInput = onUpdateMessageInput,
-                    onSendMessage = onSendMessage,
-                    onSendVoiceMessage = onSendVoiceMessage,
-                    onSendStickerMessage = onSendStickerMessage,
-                    onSendRichAttachment = onSendRichAttachment,
+                    onSendMessage = effectiveOnSendMessage,
+                    onSendVoiceMessage = effectiveOnSendVoiceMessage,
+                    onSendStickerMessage = effectiveOnSendStickerMessage,
+                    onSendRichAttachment = effectiveOnSendRichAttachment,
                     onToggleDoodleMode = onToggleDoodleMode,
                     onToggleStickerTray = onToggleStickerTray,
                     onToggleAttachmentTray = onToggleAttachmentTray,
@@ -391,7 +690,7 @@ fun ChatSpaceScreen(
                         onToggleCameraStudio(true)
                     },
                     onUpdateInteractiveMessage = { msg, newMeta ->
-                        onUpdateInteractiveMessage(msg, msg.content, newMeta)
+                        effectiveOnUpdateInteractiveMessage(msg, msg.content, newMeta)
                     },
                     onClearReply = { onSelectReply(null) }
                 )
@@ -446,7 +745,7 @@ fun ChatSpaceScreen(
                                 renderStroke(s.pointsDp, Color(s.colorArgb), s.strokeWidthDp)
                             }
                             if (activeStrokePointsDp.isNotEmpty()) {
-                                renderStroke(activeStrokePointsDp, Color(currentColorState), 3.5f)
+                                renderStroke(activeStrokePointsDp, Color(currentColorState), strokeThicknessDp)
                             }
                         }
                         .padding(horizontal = 16.dp, vertical = 12.dp)
@@ -474,7 +773,11 @@ fun ChatSpaceScreen(
                                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
                             ) {
                                 Text(
-                                    text = "Today • End-to-End DuoSpace",
+                                    text = when (activeSubChat) {
+                                        SubChatDestination.MY_MONTHLY_MOMENTS -> "🔒 Private Monthly Moments • Hidden from $partnerName until Month-End"
+                                        SubChatDestination.PARTNER_MONTHLY_MOMENTS -> "✨ $partnerName's Monthly Moments • Unwrapped"
+                                        else -> "Today • End-to-End DuoSpace"
+                                    },
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
@@ -521,7 +824,7 @@ fun ChatSpaceScreen(
                                             activeContextMessageId = message.id
                                         },
                                         onTapReactionBadge = { emoji ->
-                                            onToggleReaction(message, emoji)
+                                            effectiveOnToggleReaction(message, emoji)
                                         },
                                         onDismissMenu = {
                                             activeContextMessageId = null
@@ -529,9 +832,9 @@ fun ChatSpaceScreen(
                                         },
                                         onSelectReactionFromMenu = { emoji ->
                                             if (openEmojiPickerDirectly) {
-                                                onReplaceReaction(message, emoji)
+                                                effectiveOnReplaceReaction(message, emoji)
                                             } else {
-                                                onToggleReaction(message, emoji)
+                                                effectiveOnToggleReaction(message, emoji)
                                             }
                                             activeContextMessageId = null
                                             openEmojiPickerDirectly = false
@@ -541,7 +844,7 @@ fun ChatSpaceScreen(
                                             activeContextMessageId = null
                                         },
                                         onTogglePinFromMenu = {
-                                            onTogglePinMessage(message)
+                                            effectiveOnTogglePinMessage(message)
                                             activeContextMessageId = null
                                         },
                                         onEditAndDrawMedia = { bmp, cap ->
@@ -550,7 +853,7 @@ fun ChatSpaceScreen(
                                             onToggleCameraStudio(true)
                                         },
                                         onUpdateInteractiveMeta = { updatedMeta ->
-                                            onUpdateInteractiveMessage(message, message.content, updatedMeta)
+                                            effectiveOnUpdateInteractiveMessage(message, message.content, updatedMeta)
                                         }
                                     )
                                 }
@@ -573,7 +876,7 @@ fun ChatSpaceScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .pointerInput(Unit) {
+                            .pointerInput(isEraserMode, strokeThicknessDp) {
                                 val horizontalPadPx = 16.dp.toPx()
                                 val verticalPadPx = 12.dp.toPx()
                                 detectDragGestures(
@@ -584,7 +887,28 @@ fun ChatSpaceScreen(
                                         val ptDp = with(density) {
                                             Offset(contentX.toDp().value, contentY.toDp().value)
                                         }
-                                        activeStrokePointsDp.add(ptDp)
+                                        if (isEraserMode) {
+                                            val eraseRadius = strokeThicknessDp * 2.5f + 16f
+                                            val removed = strokes.removeAll { stroke ->
+                                                stroke.pointsDp.any { pt ->
+                                                    val dx = pt.x - ptDp.x
+                                                    val dy = pt.y - ptDp.y
+                                                    (dx * dx + dy * dy) <= (eraseRadius * eraseRadius)
+                                                }
+                                            }
+                                            if (removed) {
+                                                val newUsedBottomDp = computeUsedBottomSpaceDp(
+                                                    strokes,
+                                                    currentMessagesHeightState
+                                                )
+                                                effectiveOnUpdateScreenDoodle(
+                                                    DoodleSerializer.encode(strokes).ifEmpty { null },
+                                                    newUsedBottomDp
+                                                )
+                                            }
+                                        } else {
+                                            activeStrokePointsDp.add(ptDp)
+                                        }
                                     },
                                     onDrag = { change, _ ->
                                         change.consume()
@@ -594,15 +918,36 @@ fun ChatSpaceScreen(
                                         val ptDp = with(density) {
                                             Offset(contentX.toDp().value, contentY.toDp().value)
                                         }
-                                        activeStrokePointsDp.add(ptDp)
+                                        if (isEraserMode) {
+                                            val eraseRadius = strokeThicknessDp * 2.5f + 16f
+                                            val removed = strokes.removeAll { stroke ->
+                                                stroke.pointsDp.any { pt ->
+                                                    val dx = pt.x - ptDp.x
+                                                    val dy = pt.y - ptDp.y
+                                                    (dx * dx + dy * dy) <= (eraseRadius * eraseRadius)
+                                                }
+                                            }
+                                            if (removed) {
+                                                val newUsedBottomDp = computeUsedBottomSpaceDp(
+                                                    strokes,
+                                                    currentMessagesHeightState
+                                                )
+                                                effectiveOnUpdateScreenDoodle(
+                                                    DoodleSerializer.encode(strokes).ifEmpty { null },
+                                                    newUsedBottomDp
+                                                )
+                                            }
+                                        } else {
+                                            activeStrokePointsDp.add(ptDp)
+                                        }
                                     },
                                     onDragEnd = {
-                                        if (activeStrokePointsDp.isNotEmpty()) {
+                                        if (!isEraserMode && activeStrokePointsDp.isNotEmpty()) {
                                             strokes.add(
                                                 DoodleStroke(
                                                     pointsDp = activeStrokePointsDp.toList(),
                                                     colorArgb = currentColorState,
-                                                    strokeWidthDp = 3.5f
+                                                    strokeWidthDp = strokeThicknessDp
                                                 )
                                             )
                                             activeStrokePointsDp.clear()
@@ -610,19 +955,19 @@ fun ChatSpaceScreen(
                                                 strokes,
                                                 currentMessagesHeightState
                                             )
-                                            onUpdateScreenDoodle(
+                                            effectiveOnUpdateScreenDoodle(
                                                 DoodleSerializer.encode(strokes),
                                                 newUsedBottomDp
                                             )
                                         }
                                     },
                                     onDragCancel = {
-                                        if (activeStrokePointsDp.isNotEmpty()) {
+                                        if (!isEraserMode && activeStrokePointsDp.isNotEmpty()) {
                                             strokes.add(
                                                 DoodleStroke(
                                                     pointsDp = activeStrokePointsDp.toList(),
                                                     colorArgb = currentColorState,
-                                                    strokeWidthDp = 3.5f
+                                                    strokeWidthDp = strokeThicknessDp
                                                 )
                                             )
                                             activeStrokePointsDp.clear()
@@ -694,12 +1039,15 @@ fun ChatSpaceScreen(
                         selectedColor = selectedDoodleColor,
                         canUndo = strokes.isNotEmpty(),
                         canClear = strokes.isNotEmpty(),
-                        onSelectColor = { selectedDoodleColor = it },
+                        onSelectColor = {
+                            selectedDoodleColor = it
+                            isEraserMode = false
+                        },
                         onUndo = {
                             if (strokes.isNotEmpty()) {
                                 strokes.removeAt(strokes.lastIndex)
                                 val updatedBottom = computeUsedBottomSpaceDp(strokes, messagesContentHeightDp)
-                                onUpdateScreenDoodle(
+                                effectiveOnUpdateScreenDoodle(
                                     DoodleSerializer.encode(strokes).ifEmpty { null },
                                     updatedBottom
                                 )
@@ -709,10 +1057,17 @@ fun ChatSpaceScreen(
                             strokes.clear()
                             activeStrokePointsDp.clear()
                             tempDoodleAddedSpaceDp = 64
-                            onUpdateScreenDoodle(null, 0)
+                            effectiveOnUpdateScreenDoodle(null, 0)
                         },
                         onAddBottomSpace = {},
-                        onDone = { onToggleDoodleMode(false) }
+                        onDone = { onToggleDoodleMode(false) },
+                        isEraser = isEraserMode,
+                        onToggleEraser = { isEraserMode = !isEraserMode },
+                        strokeThicknessDp = strokeThicknessDp,
+                        onSelectThickness = {
+                            strokeThicknessDp = it
+                            isEraserMode = false
+                        }
                     )
                 }
             }
@@ -722,8 +1077,8 @@ fun ChatSpaceScreen(
         if (showPinnedDialog) {
             PinnedMessagesDialog(
                 pinnedMessages = allPinnedMessages,
-                onUnpinMessage = onTogglePinMessage,
-                onUnpinAll = onUnpinMessage,
+                onUnpinMessage = effectiveOnTogglePinMessage,
+                onUnpinAll = effectiveOnUnpinMessage,
                 onDismiss = { showPinnedDialog = false }
             )
         }
@@ -740,8 +1095,40 @@ fun ChatSpaceScreen(
         if (showExportMarkdownDialog) {
             ExportChatMarkdownDialog(
                 space = space,
-                messages = messages,
+                messages = effectiveMessages,
                 onDismiss = { showExportMarkdownDialog = false }
+            )
+        }
+
+        if (showClearMonthlyMomentsDialog) {
+            AlertDialog(
+                onDismissRequest = { showClearMonthlyMomentsDialog = false },
+                title = { Text("Clear Monthly Moments & Relock?") },
+                text = {
+                    Text(
+                        "Clearing this chat will wipe all messages, media, and doodles in this Monthly Moments vault and immediately lock it again."
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        onClick = {
+                            MonthlyMomentsPersistence.clearMomentsAndRelock(context, spaceCode, momentsTargetSlot)
+                            momentMessagesState = emptyList()
+                            strokes.clear()
+                            showClearMonthlyMomentsDialog = false
+                            Toast.makeText(context, "Monthly Moments cleared and locked 🔒", Toast.LENGTH_SHORT).show()
+                            activeSubChat = null
+                        }
+                    ) {
+                        Text("Clear & Relock")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showClearMonthlyMomentsDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
             )
         }
 
@@ -760,7 +1147,7 @@ fun ChatSpaceScreen(
                 onSendMediaToChat = { content, msgType, mediaMeta ->
                     studioInitialBitmap = null
                     studioInitialCaption = ""
-                    onSendRichAttachment(content, msgType, mediaMeta)
+                    effectiveOnSendRichAttachment(content, msgType, mediaMeta)
                 }
             )
         }
@@ -805,9 +1192,15 @@ private fun MinimalHeaderBar(
     onOpenCallHistory: () -> Unit,
     onToggleAutoRecordCalls: () -> Unit,
     onOpenExportMarkdown: () -> Unit,
-    onBackToDashboard: (() -> Unit)? = null
+    onBackToDashboard: (() -> Unit)? = null,
+    headerTitleOverride: String? = null,
+    headerSubtitleOverride: String? = null,
+    showCallButton: Boolean = true,
+    onClearMonthlyMoments: (() -> Unit)? = null
 ) {
     val partnerName = if (activeUser == TestUserSlot.USER_1) user2Name else user1Name
+    val displayTitle = headerTitleOverride ?: partnerName
+    val displaySubtitle = headerSubtitleOverride ?: "Active now"
     var isMoreMenuExpanded by remember { mutableStateOf(false) }
 
     Surface(
@@ -864,17 +1257,26 @@ private fun MinimalHeaderBar(
                             ),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = partnerName.take(1).uppercase(),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+                        if (!showCallButton) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        } else {
+                            Text(
+                                text = partnerName.take(1).uppercase(),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
                     }
 
                     Column {
                         Text(
-                            text = partnerName,
+                            text = displayTitle,
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface,
@@ -889,36 +1291,72 @@ private fun MinimalHeaderBar(
                                 modifier = Modifier
                                     .size(6.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0xFF10B981))
+                                    .background(if (showCallButton) Color(0xFF10B981) else MaterialTheme.colorScheme.primary)
                             )
                             Text(
-                                text = "Active now",
+                                text = displaySubtitle,
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
                 }
 
-                // Right: Single Call Button + 3-Dot More Menu
+                // Right: User Switcher Pill + Single Call Button (only in Main Chat) + 3-Dot More Menu
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    // Single Call Button (can turn into Video Call with Front/Back Camera inside call)
-                    IconButton(
-                        onClick = onStartCall,
+                    // Profile Switcher Pill
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f),
                         modifier = Modifier
-                            .size(36.dp)
-                            .testTag("voice_call_button")
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                val nextSlot = if (activeUser == TestUserSlot.USER_1) TestUserSlot.USER_2 else TestUserSlot.USER_1
+                                onSwitchUser(nextSlot)
+                            }
+                            .testTag("header_switch_user_pill")
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Call,
-                            contentDescription = "Call",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(19.dp)
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Autorenew,
+                                contentDescription = "Switch profile slot",
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = if (activeUser == TestUserSlot.USER_1) "User 1" else "User 2",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                    }
+
+                    // Single Call Button (Hidden in Monthly Moments per user request)
+                    if (showCallButton) {
+                        IconButton(
+                            onClick = onStartCall,
+                            modifier = Modifier
+                                .size(36.dp)
+                                .testTag("voice_call_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Call,
+                                contentDescription = "Call",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
                     }
 
                     // Top-Right Three-Dot Menu Button
@@ -941,6 +1379,25 @@ private fun MinimalHeaderBar(
                             expanded = isMoreMenuExpanded,
                             onDismissRequest = { isMoreMenuExpanded = false }
                         ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text("Switch to ${if (activeUser == TestUserSlot.USER_1) user2Name else user1Name}")
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Autorenew,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                onClick = {
+                                    isMoreMenuExpanded = false
+                                    val nextSlot = if (activeUser == TestUserSlot.USER_1) TestUserSlot.USER_2 else TestUserSlot.USER_1
+                                    onSwitchUser(nextSlot)
+                                },
+                                modifier = Modifier.testTag("menu_item_switch_user")
+                            )
+
                             DropdownMenuItem(
                                 text = { Text("Search") },
                                 leadingIcon = {
@@ -978,55 +1435,57 @@ private fun MinimalHeaderBar(
                                 modifier = Modifier.testTag("menu_item_pinned")
                             )
 
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (callCount > 0) "Call History ($callCount)"
-                                        else "Call History & Recordings"
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Default.History,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                },
-                                onClick = {
-                                    isMoreMenuExpanded = false
-                                    onOpenCallHistory()
-                                },
-                                modifier = Modifier.testTag("menu_item_call_history")
-                            )
+                            if (showCallButton) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (callCount > 0) "Call History ($callCount)"
+                                            else "Call History & Recordings"
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.History,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    onClick = {
+                                        isMoreMenuExpanded = false
+                                        onOpenCallHistory()
+                                    },
+                                    modifier = Modifier.testTag("menu_item_call_history")
+                                )
 
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (autoRecordCalls) "Auto-Record Calls: ON"
-                                        else "Auto-Record Calls: OFF"
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = if (autoRecordCalls) {
-                                            Icons.Default.Check
-                                        } else {
-                                            Icons.Default.FiberManualRecord
-                                        },
-                                        contentDescription = null,
-                                        tint = if (autoRecordCalls) {
-                                            Color(0xFFEF4444)
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurfaceVariant
-                                        },
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                },
-                                onClick = {
-                                    onToggleAutoRecordCalls()
-                                },
-                                modifier = Modifier.testTag("menu_item_auto_record_calls")
-                            )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (autoRecordCalls) "Auto-Record Calls: ON"
+                                            else "Auto-Record Calls: OFF"
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = if (autoRecordCalls) {
+                                                Icons.Default.Check
+                                            } else {
+                                                Icons.Default.FiberManualRecord
+                                            },
+                                            contentDescription = null,
+                                            tint = if (autoRecordCalls) {
+                                                Color(0xFFEF4444)
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    onClick = {
+                                        onToggleAutoRecordCalls()
+                                    },
+                                    modifier = Modifier.testTag("menu_item_auto_record_calls")
+                                )
+                            }
 
                             HorizontalDivider(
                                 modifier = Modifier.padding(vertical = 4.dp),
@@ -1048,6 +1507,35 @@ private fun MinimalHeaderBar(
                                 },
                                 modifier = Modifier.testTag("menu_item_export_md")
                             )
+
+                            if (onClearMonthlyMoments != null) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(vertical = 4.dp),
+                                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = "Clear Chat & Lock",
+                                            color = MaterialTheme.colorScheme.error,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.DeleteOutline,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    onClick = {
+                                        isMoreMenuExpanded = false
+                                        onClearMonthlyMoments()
+                                    },
+                                    modifier = Modifier.testTag("menu_item_clear_monthly_moments")
+                                )
+                            }
                         }
                     }
                 }

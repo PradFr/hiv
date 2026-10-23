@@ -160,6 +160,11 @@ fun DuoSpaceApp() {
         }
     }
 
+    val handleSwitchUser: (com.example.ui.TestUserSlot) -> Unit = { targetSlot ->
+        com.example.ui.HiveSettingsPersistence.setLocalUserSlot(context, targetSlot)
+        viewModel.switchActiveUser(targetSlot)
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -202,7 +207,7 @@ fun DuoSpaceApp() {
                         uiState = uiState,
                         space = customizedSpace,
                         messages = messages,
-                        onSwitchUser = viewModel::switchActiveUser,
+                        onSwitchUser = handleSwitchUser,
                         onUpdateMessageInput = viewModel::updateMessageInput,
                         onSendMessage = viewModel::sendMessage,
                         onSendVoiceMessage = viewModel::sendVoiceMessage,
@@ -244,7 +249,7 @@ fun DuoSpaceApp() {
                         activeUser = uiState.activeUser,
                         user1Name = user1Name,
                         user2Name = user2Name,
-                        onSwitchUser = viewModel::switchActiveUser,
+                        onSwitchUser = handleSwitchUser,
                         onBackToDashboard = {
                             currentDestination = DuoBottomNavDestination.DASHBOARD
                         },
@@ -265,7 +270,7 @@ fun DuoSpaceApp() {
                         activeUser = uiState.activeUser,
                         user1Name = user1Name,
                         user2Name = user2Name,
-                        onSwitchUser = viewModel::switchActiveUser,
+                        onSwitchUser = handleSwitchUser,
                         onBackToDashboard = {
                             currentDestination = DuoBottomNavDestination.DASHBOARD
                         },
@@ -287,7 +292,7 @@ fun DuoSpaceApp() {
                         user1Name = user1Name,
                         user2Name = user2Name,
                         messages = messages,
-                        onSwitchUser = viewModel::switchActiveUser,
+                        onSwitchUser = handleSwitchUser,
                         onBackToDashboard = {
                             currentDestination = DuoBottomNavDestination.DASHBOARD
                         },
@@ -308,7 +313,7 @@ fun DuoSpaceApp() {
                         uiState = uiState,
                         space = customizedSpace,
                         messages = messages,
-                        onSwitchUser = viewModel::switchActiveUser,
+                        onSwitchUser = handleSwitchUser,
                         onOpenChat = {
                             currentDestination = DuoBottomNavDestination.CHAT
                         },
@@ -327,6 +332,12 @@ fun DuoSpaceApp() {
                         },
                         onStartCall = { viewModel.startCall(CallMode.VOICE) },
                         onJoinOrSwitchSpace = { spaceCode, slot, displayName ->
+                            com.example.ui.HiveSettingsPersistence.completeSpacePairing(
+                                context = context,
+                                spaceCode = spaceCode,
+                                slot = slot,
+                                displayName = displayName
+                            )
                             if (slot == com.example.ui.TestUserSlot.USER_2 && spaceCode != uiState.activeSpaceCode) {
                                 viewModel.joinExistingSpace(spaceCode, displayName)
                             } else {
@@ -351,7 +362,7 @@ fun DuoSpaceApp() {
                     onFlipCamera = viewModel::flipCallCamera,
                     onToggleScreenShare = viewModel::toggleCallScreenShare,
                     onToggleRecordCall = viewModel::toggleCallRecording,
-                    onSwitchUser = viewModel::switchActiveUser,
+                    onSwitchUser = handleSwitchUser,
                     onEndCall = viewModel::endCall,
                     onOpenChatFromCall = {
                         currentDestination = DuoBottomNavDestination.CHAT

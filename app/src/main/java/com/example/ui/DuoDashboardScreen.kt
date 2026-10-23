@@ -53,6 +53,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Book
 import androidx.compose.material.icons.filled.Brush
@@ -464,6 +465,35 @@ fun DuoDashboardScreen(
                                                 color = MaterialTheme.colorScheme.primary
                                             )
                                         }
+                                    }
+                                }
+
+                                // Quick Profile Switcher (Test / Duo Mode)
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.75f),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { onSwitchUser(partnerSlot) }
+                                        .testTag("dashboard_switch_user_pill")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Autorenew,
+                                            contentDescription = "Switch profile",
+                                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                        Text(
+                                            text = "You: $activeUserName • Switch to $partnerName",
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                                        )
                                     }
                                 }
                             }
