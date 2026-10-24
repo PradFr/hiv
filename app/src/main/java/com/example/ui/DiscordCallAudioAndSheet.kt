@@ -899,7 +899,7 @@ fun rememberRealCallVoiceDspEngine(
                         hasMicPermission = true
                     )
 
-                    if (currentLoopback && gateOpen) {
+                    if (gateOpen) {
                         val outGain = (currentOutputVol / 100f).coerceIn(0f, 2f)
                         for (i in 0 until readCount) {
                             val rawSample = floatFrame[i] * suppressionFactor * agcGain * outGain
@@ -909,7 +909,10 @@ fun rememberRealCallVoiceDspEngine(
                                 .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
                                 .toShort()
                         }
-                        loopbackTrack.write(outBuffer, 0, readCount)
+                        com.example.data.remote.HiveLivePeerRelay.submitCallDspPcm16(outBuffer, readCount)
+                        if (currentLoopback) {
+                            loopbackTrack.write(outBuffer, 0, readCount)
+                        }
                     }
                 }
             } catch (_: SecurityException) {

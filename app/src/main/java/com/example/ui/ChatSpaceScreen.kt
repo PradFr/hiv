@@ -174,6 +174,7 @@ fun ChatSpaceScreen(
     uiState: DuoUiState,
     space: SpaceEntity?,
     messages: List<MessageEntity>,
+    targetSubChat: SubChatDestination? = SubChatDestination.MAIN_CHAT,
     onSwitchUser: (TestUserSlot) -> Unit,
     onUpdateMessageInput: (String) -> Unit,
     onSendMessage: () -> Unit,
@@ -203,6 +204,7 @@ fun ChatSpaceScreen(
     onUpdateInteractiveMessage: (MessageEntity, String, String?) -> Unit = { _, _, _ -> },
     onSetVoiceRecording: (Boolean) -> Unit = {},
     onBackToDashboard: (() -> Unit)? = null,
+    onActiveSubChatChanged: (SubChatDestination?) -> Unit = {},
     renderCallOverlay: Boolean = true
 ) {
     val scrollState = rememberScrollState()
@@ -212,7 +214,11 @@ fun ChatSpaceScreen(
     var studioInitialBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var studioInitialCaption by remember { mutableStateOf("") }
 
-    var activeSubChat by remember { mutableStateOf<SubChatDestination?>(null) }
+    var activeSubChat by remember(targetSubChat) { mutableStateOf<SubChatDestination?>(targetSubChat) }
+
+    LaunchedEffect(activeSubChat) {
+        onActiveSubChatChanged(activeSubChat)
+    }
 
     BackHandler(
         enabled = activeSubChat != null &&
@@ -580,6 +586,7 @@ fun ChatSpaceScreen(
                     autoRecordCalls = space?.autoRecordCalls == true,
                     onSwitchUser = onSwitchUser,
                     onStartCall = { onStartCall(CallMode.VOICE) },
+                    onStartVideoCall = { onStartCall(CallMode.VIDEO) },
                     onOpenSearch = {
                         isSearchBarVisible = !isSearchBarVisible
                         if (!isSearchBarVisible) searchQuery = ""
@@ -630,6 +637,7 @@ fun ChatSpaceScreen(
                         autoRecordCalls = space?.autoRecordCalls == true,
                         onSwitchUser = onSwitchUser,
                         onStartCall = { onStartCall(CallMode.VOICE) },
+                        onStartVideoCall = { onStartCall(CallMode.VIDEO) },
                         onOpenSearch = {
                             isSearchBarVisible = !isSearchBarVisible
                             if (!isSearchBarVisible) searchQuery = ""
@@ -911,14 +919,8 @@ fun ChatSpaceScreen(
                                             Offset(contentX.toDp().value, contentY.toDp().value)
                                         }
                                         if (isEraserMode) {
-                                            val eraseRadius = strokeThicknessDp * 2.5f + 16f
-                                            val removed = strokes.removeAll { stroke ->
-                                                stroke.pointsDp.any { pt ->
-                                                    val dx = pt.x - ptDp.x
-                                                    val dy = pt.y - ptDp.y
-                                                    (dx * dx + dy * dy) <= (eraseRadius * eraseRadius)
-                                                }
-                                            }
+                                            val eraseRadius = strokeThicknessDp * 1.8f + 12f
+                                            val removed = eraseStrokesNearPoint(strokes, ptDp, eraseRadius)
                                             if (removed) {
                                                 val newUsedBottomDp = computeUsedBottomSpaceDp(
                                                     strokes,
@@ -942,14 +944,8 @@ fun ChatSpaceScreen(
                                             Offset(contentX.toDp().value, contentY.toDp().value)
                                         }
                                         if (isEraserMode) {
-                                            val eraseRadius = strokeThicknessDp * 2.5f + 16f
-                                            val removed = strokes.removeAll { stroke ->
-                                                stroke.pointsDp.any { pt ->
-                                                    val dx = pt.x - ptDp.x
-                                                    val dy = pt.y - ptDp.y
-                                                    (dx * dx + dy * dy) <= (eraseRadius * eraseRadius)
-                                                }
-                                            }
+                                            val eraseRadius = strokeThicknessDp * 1.8f + 12f
+                                            val removed = eraseStrokesNearPoint(strokes, ptDp, eraseRadius)
                                             if (removed) {
                                                 val newUsedBottomDp = computeUsedBottomSpaceDp(
                                                     strokes,
@@ -1089,7 +1085,6 @@ fun ChatSpaceScreen(
                         strokeThicknessDp = strokeThicknessDp,
                         onSelectThickness = {
                             strokeThicknessDp = it
-                            isEraserMode = false
                         }
                     )
                 }
@@ -1211,6 +1206,7 @@ private fun MinimalHeaderBar(
     autoRecordCalls: Boolean,
     onSwitchUser: (TestUserSlot) -> Unit,
     onStartCall: () -> Unit,
+    onStartVideoCall: () -> Unit = onStartCall,
     onOpenSearch: () -> Unit,
     onOpenPinnedMessages: () -> Unit,
     onOpenCallHistory: () -> Unit,
@@ -1371,45 +1367,26 @@ private fun MinimalHeaderBar(
                     }
                 }
 
-                // Right: User Switcher Pill + Single Call Button (only in Main Chat) + 3-Dot More Menu
+                // Right: Single Call Button (only in Main Chat) + 3-Dot More Menu
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    // Profile Switcher Pill
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable {
-                                val nextSlot = if (activeUser == TestUserSlot.USER_1) TestUserSlot.USER_2 else TestUserSlot.USER_1
-                                onSwitchUser(nextSlot)
-                            }
-                            .testTag("header_switch_user_pill")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    // Voice & Video Call Buttons (Hidden in Monthly Moments per user request)
+                    if (showCallButton) {
+                        IconButton(
+                            onClick = onStartVideoCall,
+                            modifier = Modifier
+                                .size(36.dp)
+                                .testTag("video_call_button")
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Autorenew,
-                                contentDescription = "Switch profile slot",
-                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.size(13.dp)
-                            )
-                            Text(
-                                text = if (activeUser == TestUserSlot.USER_1) "User 1" else "User 2",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                imageVector = Icons.Default.Videocam,
+                                contentDescription = "Video Call",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
-                    }
-
-                    // Single Call Button (Hidden in Monthly Moments per user request)
-                    if (showCallButton) {
                         IconButton(
                             onClick = onStartCall,
                             modifier = Modifier
@@ -1418,7 +1395,7 @@ private fun MinimalHeaderBar(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Call,
-                                contentDescription = "Call",
+                                contentDescription = "Voice Call",
                                 tint = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.size(19.dp)
                             )
@@ -1445,25 +1422,6 @@ private fun MinimalHeaderBar(
                             expanded = isMoreMenuExpanded,
                             onDismissRequest = { isMoreMenuExpanded = false }
                         ) {
-                            DropdownMenuItem(
-                                text = {
-                                    Text("Switch to ${if (activeUser == TestUserSlot.USER_1) user2Name else user1Name}")
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Default.Autorenew,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                },
-                                onClick = {
-                                    isMoreMenuExpanded = false
-                                    val nextSlot = if (activeUser == TestUserSlot.USER_1) TestUserSlot.USER_2 else TestUserSlot.USER_1
-                                    onSwitchUser(nextSlot)
-                                },
-                                modifier = Modifier.testTag("menu_item_switch_user")
-                            )
-
                             DropdownMenuItem(
                                 text = { Text("Search") },
                                 leadingIcon = {

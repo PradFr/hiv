@@ -36,9 +36,11 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -47,6 +49,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -59,19 +62,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AspectRatio
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Cameraswitch
-import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
-import androidx.compose.material.icons.filled.GridOff
-import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Refresh
@@ -114,17 +113,21 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlin.math.roundToInt
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.data.local.MessageType
@@ -184,7 +187,10 @@ data class PlacedStampOverlay(
     val id: String,
     val text: String,
     val xNorm: Float,
-    val yNorm: Float
+    val yNorm: Float,
+    val fontSizeSp: Float = 22f,
+    val rotationDeg: Float = 0f,
+    val colorArgb: Long = 0xFFFFFFFFL
 )
 
 val STUDIO_BRUSH_COLORS = listOf(
@@ -198,14 +204,38 @@ val STUDIO_BRUSH_COLORS = listOf(
     0xFF8B5CF6L  // Violet
 )
 
-val STUDIO_QUICK_STAMPS = listOf(
-    "❤️", "🔥", "✨", "🥰", "💋", "📸", "🎉", "Date Night", "Miss You", "Us Two"
-)
+private fun eraseStudioStrokesNearPoint(
+    strokes: List<NormalizedDrawStroke>,
+    normPoint: Offset,
+    radiusNorm: Float
+): List<NormalizedDrawStroke> {
+    val rSq = radiusNorm * radiusNorm
+    val result = mutableListOf<NormalizedDrawStroke>()
+    for (stroke in strokes) {
+        var currentSegment = mutableListOf<Offset>()
+        for (pt in stroke.pointsNorm) {
+            val dx = pt.x - normPoint.x
+            val dy = pt.y - normPoint.y
+            if (dx * dx + dy * dy <= rSq) {
+                if (currentSegment.isNotEmpty()) {
+                    result.add(stroke.copy(pointsNorm = currentSegment))
+                    currentSegment = mutableListOf()
+                }
+            } else {
+                currentSegment.add(pt)
+            }
+        }
+        if (currentSegment.isNotEmpty()) {
+            result.add(stroke.copy(pointsNorm = currentSegment))
+        }
+    }
+    return result
+}
 
 /**
  * Full-Screen In-App Camera & Edit/Draw Studio for Chat.
- * Supports both Photos and Videos, Pro Camera Settings, Freehand Drawing, Text & Stamp Overlays,
- * Save to Phone, and Direct Send to Chat (with Signal-style smart sizer + E2EE sandbox storage).
+ * Supports both Photos and Videos, Pro Camera Settings, Freehand Drawing + Eraser,
+ * Frameless Zoomable/Rotatable Text Overlays, Save to Phone, and Direct Send to Chat.
  */
 @Composable
 fun ChatCameraStudioModal(
@@ -227,7 +257,6 @@ fun ChatCameraStudioModal(
     var timerSetting by remember { mutableStateOf(CameraTimerSetting.OFF) }
     var aspectRatioSetting by remember { mutableStateOf(CameraAspectRatioSetting.RATIO_4_3) }
     var selectedFilter by remember { mutableStateOf(CameraFilterPreset.NATURAL) }
-    var showGridlines by remember { mutableStateOf(true) }
     var showSettingsSheet by remember { mutableStateOf(false) }
     var smartSizerEnabled by remember { mutableStateOf(true) }
     var dateWatermarkEnabled by remember { mutableStateOf(true) }
@@ -246,16 +275,18 @@ fun ChatCameraStudioModal(
     var capturedVideoDurationSec by remember { mutableIntStateOf(0) }
     var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
 
-    // Studio Drawing & Annotation State
-    var isDrawModeActive by remember { mutableStateOf(true) }
+    // Studio Drawing & Annotation State (Doodle is NOT auto-selected; toggle button in top bar)
+    var isDrawModeActive by remember { mutableStateOf(false) }
+    var isEraserMode by remember { mutableStateOf(false) }
     val studioStrokes = remember { mutableStateListOf<NormalizedDrawStroke>() }
     val activeStrokePoints = remember { mutableStateListOf<Offset>() }
     var selectedBrushColor by remember { mutableLongStateOf(STUDIO_BRUSH_COLORS[1]) }
-    var selectedBrushWidthDp by remember { mutableFloatStateOf(5f) }
+    var selectedBrushWidthDp by remember { mutableFloatStateOf(5.5f) }
     val placedStamps = remember { mutableStateListOf<PlacedStampOverlay>() }
-    var overlayBannerText by remember { mutableStateOf("") }
+    var editingTextId by remember { mutableStateOf<String?>(null) }
     var showAddTextDialog by remember { mutableStateOf(false) }
     var tempTextDialogInput by remember { mutableStateOf("") }
+    var tempTextColorArgb by remember { mutableLongStateOf(0xFFFFFFFFL) }
     var captionInput by remember(initialCaption) { mutableStateOf(initialCaption) }
     var canvasPixelSize by remember { mutableStateOf(IntSize(1080, 1440)) }
 
@@ -294,6 +325,8 @@ fun ChatCameraStudioModal(
                         capturedBitmap = bmp
                         capturedIsVideo = mime.startsWith("video/")
                         capturedVideoDurationSec = if (capturedIsVideo) 6 else 0
+                        isDrawModeActive = false
+                        isEraserMode = false
                         studioStrokes.clear()
                         placedStamps.clear()
                     }
@@ -317,9 +350,10 @@ fun ChatCameraStudioModal(
         if (capturedBitmap != null && initialEditBitmap == null) {
             capturedBitmap = null
             capturedIsVideo = false
+            isDrawModeActive = false
+            isEraserMode = false
             studioStrokes.clear()
             placedStamps.clear()
-            overlayBannerText = ""
         } else {
             onClose()
         }
@@ -350,6 +384,8 @@ fun ChatCameraStudioModal(
             capturedBitmap = baseBmp
             capturedIsVideo = forVideo
             capturedVideoDurationSec = durationSec.coerceAtLeast(if (forVideo) 3 else 0)
+            isDrawModeActive = false
+            isEraserMode = false
             studioStrokes.clear()
             placedStamps.clear()
         }
@@ -387,28 +423,91 @@ fun ChatCameraStudioModal(
         }
     }
 
-    // Add Text Overlay Dialog
+    // Add / Edit Frameless Text Overlay Dialog
     if (showAddTextDialog) {
         AlertDialog(
-            onDismissRequest = { showAddTextDialog = false },
-            title = { Text("Add Text Overlay", fontWeight = FontWeight.Bold) },
-            text = {
-                OutlinedTextField(
-                    value = tempTextDialogInput,
-                    onValueChange = { tempTextDialogInput = it },
-                    placeholder = { Text("Type text to place on photo/video…") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("camera_text_overlay_input")
+            onDismissRequest = {
+                showAddTextDialog = false
+                editingTextId = null
+            },
+            title = {
+                Text(
+                    if (editingTextId != null) "Edit Text" else "Add Text",
+                    fontWeight = FontWeight.Bold
                 )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = tempTextDialogInput,
+                        onValueChange = { tempTextDialogInput = it },
+                        placeholder = { Text("Type text…") },
+                        singleLine = false,
+                        maxLines = 3,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("camera_text_overlay_input")
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        STUDIO_BRUSH_COLORS.forEach { colorHex ->
+                            val selected = tempTextColorArgb == colorHex
+                            Box(
+                                modifier = Modifier
+                                    .size(if (selected) 26.dp else 22.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(colorHex))
+                                    .border(
+                                        width = if (selected) 2.5.dp else 1.dp,
+                                        color = if (selected) Color.White else Color.White.copy(alpha = 0.4f),
+                                        shape = CircleShape
+                                    )
+                                    .clickable { tempTextColorArgb = colorHex }
+                            )
+                        }
+                    }
+                    Text(
+                        text = "Tip: Pinch to resize or rotate with two fingers. Drag outside the photo to delete.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        overlayBannerText = tempTextDialogInput.trim()
+                        val trimmed = tempTextDialogInput.trim()
+                        val targetId = editingTextId
+                        if (trimmed.isNotEmpty()) {
+                            if (targetId != null) {
+                                val idx = placedStamps.indexOfFirst { it.id == targetId }
+                                if (idx >= 0) {
+                                    placedStamps[idx] = placedStamps[idx].copy(
+                                        text = trimmed,
+                                        colorArgb = tempTextColorArgb
+                                    )
+                                }
+                            } else {
+                                placedStamps.add(
+                                    PlacedStampOverlay(
+                                        id = "txt_${System.currentTimeMillis()}",
+                                        text = trimmed,
+                                        xNorm = 0.5f,
+                                        yNorm = 0.45f,
+                                        fontSizeSp = 24f,
+                                        rotationDeg = 0f,
+                                        colorArgb = tempTextColorArgb
+                                    )
+                                )
+                            }
+                        } else if (targetId != null) {
+                            placedStamps.removeAll { it.id == targetId }
+                        }
                         showAddTextDialog = false
+                        editingTextId = null
                     },
                     modifier = Modifier.testTag("camera_text_overlay_confirm")
                 ) {
@@ -416,7 +515,12 @@ fun ChatCameraStudioModal(
                 }
             },
             dismissButton = {
-                OutlinedButton(onClick = { showAddTextDialog = false }) {
+                OutlinedButton(
+                    onClick = {
+                        showAddTextDialog = false
+                        editingTextId = null
+                    }
+                ) {
                     Text("Cancel")
                 }
             }
@@ -427,7 +531,7 @@ fun ChatCameraStudioModal(
     if (showSettingsSheet) {
         AlertDialog(
             onDismissRequest = { showSettingsSheet = false },
-            title = { Text("Camera Studio Settings", fontWeight = FontWeight.Bold) },
+            title = { Text("Camera Settings", fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(
@@ -447,25 +551,6 @@ fun ChatCameraStudioModal(
                             checked = smartSizerEnabled,
                             onCheckedChange = { smartSizerEnabled = it },
                             modifier = Modifier.testTag("camera_setting_smart_sizer")
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Rule-of-Thirds Grid", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                            Text(
-                                "Show 3×3 alignment grid in viewfinder",
-                                fontSize = 11.5.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = showGridlines,
-                            onCheckedChange = { showGridlines = it }
                         )
                     }
 
@@ -689,24 +774,7 @@ fun ChatCameraStudioModal(
                             }
                         }
 
-                        // Grid Toggle
-                        IconButton(
-                            onClick = { showGridlines = !showGridlines },
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.14f))
-                                .testTag("camera_grid_toggle")
-                        ) {
-                            Icon(
-                                imageVector = if (showGridlines) Icons.Default.GridOn else Icons.Default.GridOff,
-                                contentDescription = "Toggle Grid",
-                                tint = Color.White,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-
-                        // Pro Settings Gear Button
+                        //Pro Settings Gear Button
                         IconButton(
                             onClick = { showSettingsSheet = true },
                             modifier = Modifier
@@ -802,20 +870,7 @@ fun ChatCameraStudioModal(
                             }
                         }
 
-                        // 4. Rule-of-Thirds 3x3 Grid Overlay
-                        if (showGridlines) {
-                            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                                val w = size.width
-                                val h = size.height
-                                val gridColor = Color.White.copy(alpha = 0.28f)
-                                drawLine(gridColor, Offset(w / 3f, 0f), Offset(w / 3f, h), strokeWidth = 1.dp.toPx())
-                                drawLine(gridColor, Offset(w * 2f / 3f, 0f), Offset(w * 2f / 3f, h), strokeWidth = 1.dp.toPx())
-                                drawLine(gridColor, Offset(0f, h / 3f), Offset(w, h / 3f), strokeWidth = 1.dp.toPx())
-                                drawLine(gridColor, Offset(0f, h * 2f / 3f), Offset(w, h * 2f / 3f), strokeWidth = 1.dp.toPx())
-                            }
-                        }
-
-                        // 5. Video Recording Pulsing REC Badge
+                        // 4. Video Recording Pulsing REC Badge
                         if (isRecordingVideo) {
                             val pulseTransition = rememberInfiniteTransition(label = "rec")
                             val dotAlpha by pulseTransition.animateFloat(
@@ -1050,9 +1105,10 @@ fun ChatCameraStudioModal(
                                 } else {
                                     capturedBitmap = null
                                     capturedIsVideo = false
+                                    isDrawModeActive = false
+                                    isEraserMode = false
                                     studioStrokes.clear()
                                     placedStamps.clear()
-                                    overlayBannerText = ""
                                 }
                             }
                             .testTag("camera_retake_button")
@@ -1077,14 +1133,17 @@ fun ChatCameraStudioModal(
                         }
                     }
 
-                    // Draw / Text / Undo / Clear / Save to Phone Controls
+                    // Top Editor Controls: Draw Toggle, Add Text, Undo, Clear, Save to Phone
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Toggle Freehand Draw Mode
+                        // Toggle Freehand Draw Mode (Manual Toggle, not auto-selected)
                         IconButton(
-                            onClick = { isDrawModeActive = !isDrawModeActive },
+                            onClick = {
+                                isDrawModeActive = !isDrawModeActive
+                                if (!isDrawModeActive) isEraserMode = false
+                            },
                             modifier = Modifier
                                 .size(38.dp)
                                 .clip(CircleShape)
@@ -1096,23 +1155,25 @@ fun ChatCameraStudioModal(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Brush,
-                                contentDescription = "Draw on shot",
-                                tint = Color.White,
+                                contentDescription = "Toggle Doodle Mode",
+                                tint = if (isDrawModeActive) MaterialTheme.colorScheme.onPrimary else Color.White,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
 
-                        // Add Text Overlay
+                        // Add Frameless Text Overlay (Pinch-to-Zoom & 2-Finger Rotate)
                         IconButton(
                             onClick = {
-                                tempTextDialogInput = overlayBannerText
+                                editingTextId = null
+                                tempTextDialogInput = ""
+                                tempTextColorArgb = 0xFFFFFFFFL
                                 showAddTextDialog = true
                             },
                             modifier = Modifier
                                 .size(38.dp)
                                 .clip(CircleShape)
                                 .background(
-                                    if (overlayBannerText.isNotEmpty()) MaterialTheme.colorScheme.primary
+                                    if (placedStamps.isNotEmpty()) MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
                                     else Color.White.copy(alpha = 0.14f)
                                 )
                                 .testTag("studio_add_text_button")
@@ -1120,12 +1181,12 @@ fun ChatCameraStudioModal(
                             Icon(
                                 imageVector = Icons.Default.TextFields,
                                 contentDescription = "Add Text Overlay",
-                                tint = Color.White,
+                                tint = if (placedStamps.isNotEmpty()) MaterialTheme.colorScheme.onPrimary else Color.White,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
 
-                        // Undo Stroke
+                        // Undo Stroke or Text
                         IconButton(
                             onClick = {
                                 if (studioStrokes.isNotEmpty()) {
@@ -1158,9 +1219,8 @@ fun ChatCameraStudioModal(
                             onClick = {
                                 studioStrokes.clear()
                                 placedStamps.clear()
-                                overlayBannerText = ""
                             },
-                            enabled = studioStrokes.isNotEmpty() || placedStamps.isNotEmpty() || overlayBannerText.isNotEmpty(),
+                            enabled = studioStrokes.isNotEmpty() || placedStamps.isNotEmpty(),
                             modifier = Modifier
                                 .size(38.dp)
                                 .clip(CircleShape)
@@ -1170,7 +1230,11 @@ fun ChatCameraStudioModal(
                             Icon(
                                 imageVector = Icons.Default.DeleteOutline,
                                 contentDescription = "Clear drawings",
-                                tint = Color.White,
+                                tint = if (studioStrokes.isNotEmpty() || placedStamps.isNotEmpty()) {
+                                    Color.White
+                                } else {
+                                    Color.White.copy(alpha = 0.35f)
+                                },
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -1187,7 +1251,7 @@ fun ChatCameraStudioModal(
                                         filter = selectedFilter,
                                         strokes = studioStrokes,
                                         stamps = placedStamps,
-                                        bannerText = overlayBannerText,
+                                        bannerText = "",
                                         includeDateStamp = dateWatermarkEnabled
                                     )
                                     val out = ByteArrayOutputStream()
@@ -1232,51 +1296,67 @@ fun ChatCameraStudioModal(
                     }
                 }
 
-                // Interactive Photo/Video + Freehand Drawing Canvas Area
-                Box(
+                // Interactive Photo/Video + Freehand Drawing + Frameless Rotatable/Zoomable Text Canvas Area
+                BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
                         .padding(horizontal = 14.dp, vertical = 4.dp),
                     contentAlignment = Alignment.Center
                 ) {
+                    val density = LocalDensity.current
+                    val canvasWidthPx = with(density) { maxWidth.toPx().coerceAtLeast(1f) }
+                    val canvasHeightPx = with(density) { maxHeight.toPx().coerceAtLeast(1f) }
+
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .clip(RoundedCornerShape(24.dp))
-                            .border(1.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(24.dp))
+                            .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(24.dp))
                             .onSizeChanged { size ->
                                 if (size.width > 0 && size.height > 0) {
                                     canvasPixelSize = size
                                 }
                             }
-                            .pointerInput(isDrawModeActive, selectedBrushColor, selectedBrushWidthDp) {
+                            .pointerInput(isDrawModeActive, isEraserMode, selectedBrushColor, selectedBrushWidthDp) {
                                 if (isDrawModeActive) {
                                     detectDragGestures(
                                         onDragStart = { pos ->
-                                            activeStrokePoints.clear()
                                             val w = size.width.toFloat().coerceAtLeast(1f)
                                             val h = size.height.toFloat().coerceAtLeast(1f)
-                                            activeStrokePoints.add(
-                                                Offset(
-                                                    (pos.x / w).coerceIn(0f, 1f),
-                                                    (pos.y / h).coerceIn(0f, 1f)
-                                                )
+                                            val normPt = Offset(
+                                                (pos.x / w).coerceIn(0f, 1f),
+                                                (pos.y / h).coerceIn(0f, 1f)
                                             )
+                                            if (isEraserMode) {
+                                                val radiusNorm = ((selectedBrushWidthDp * 2.5f) / 300f).coerceIn(0.025f, 0.18f)
+                                                val updated = eraseStudioStrokesNearPoint(studioStrokes, normPt, radiusNorm)
+                                                studioStrokes.clear()
+                                                studioStrokes.addAll(updated)
+                                            } else {
+                                                activeStrokePoints.clear()
+                                                activeStrokePoints.add(normPt)
+                                            }
                                         },
                                         onDrag = { change, _ ->
                                             change.consume()
                                             val w = size.width.toFloat().coerceAtLeast(1f)
                                             val h = size.height.toFloat().coerceAtLeast(1f)
-                                            activeStrokePoints.add(
-                                                Offset(
-                                                    (change.position.x / w).coerceIn(0f, 1f),
-                                                    (change.position.y / h).coerceIn(0f, 1f)
-                                                )
+                                            val normPt = Offset(
+                                                (change.position.x / w).coerceIn(0f, 1f),
+                                                (change.position.y / h).coerceIn(0f, 1f)
                                             )
+                                            if (isEraserMode) {
+                                                val radiusNorm = ((selectedBrushWidthDp * 2.5f) / 300f).coerceIn(0.025f, 0.18f)
+                                                val updated = eraseStudioStrokesNearPoint(studioStrokes, normPt, radiusNorm)
+                                                studioStrokes.clear()
+                                                studioStrokes.addAll(updated)
+                                            } else {
+                                                activeStrokePoints.add(normPt)
+                                            }
                                         },
                                         onDragEnd = {
-                                            if (activeStrokePoints.isNotEmpty()) {
+                                            if (!isEraserMode && activeStrokePoints.isNotEmpty()) {
                                                 studioStrokes.add(
                                                     NormalizedDrawStroke(
                                                         pointsNorm = activeStrokePoints.toList(),
@@ -1302,7 +1382,7 @@ fun ChatCameraStudioModal(
                             modifier = Modifier.fillMaxSize()
                         )
 
-                        // Drawn Freehand Strokes + Stamps Overlay Canvas
+                        // Drawn Freehand Strokes Overlay Canvas
                         androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
                             val w = size.width
                             val h = size.height
@@ -1343,43 +1423,66 @@ fun ChatCameraStudioModal(
                             }
                         }
 
-                        // Placed Sticker Stamps
-                        placedStamps.forEach { stamp ->
+                        // Frameless Text Overlays: Pinch-to-Zoom (No Size Limit), Two-Finger Rotate, Drag-Out-of-Bounds to Delete
+                        placedStamps.forEach { textOverlay ->
+                            val offsetX = (textOverlay.xNorm * canvasWidthPx).roundToInt()
+                            val offsetY = (textOverlay.yNorm * canvasHeightPx).roundToInt()
+
                             Box(
                                 modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .padding(
-                                        start = (stamp.xNorm * 240f).dp,
-                                        top = (stamp.yNorm * 280f).dp
-                                    )
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(Color.Black.copy(alpha = 0.45f))
-                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                                    .offset { IntOffset(offsetX, offsetY) }
+                                    .graphicsLayer {
+                                        rotationZ = textOverlay.rotationDeg
+                                    }
+                                    .pointerInput(textOverlay.id, isDrawModeActive) {
+                                        if (!isDrawModeActive) {
+                                            detectTapGestures(
+                                                onTap = {
+                                                    editingTextId = textOverlay.id
+                                                    tempTextDialogInput = textOverlay.text
+                                                    tempTextColorArgb = textOverlay.colorArgb
+                                                    showAddTextDialog = true
+                                                }
+                                            )
+                                        }
+                                    }
+                                    .pointerInput(textOverlay.id, isDrawModeActive, canvasWidthPx, canvasHeightPx) {
+                                        if (!isDrawModeActive) {
+                                            detectTransformGestures { _, pan, zoom, rotation ->
+                                                val idx = placedStamps.indexOfFirst { it.id == textOverlay.id }
+                                                if (idx >= 0) {
+                                                    val cur = placedStamps[idx]
+                                                    val newX = cur.xNorm + (pan.x / canvasWidthPx)
+                                                    val newY = cur.yNorm + (pan.y / canvasHeightPx)
+                                                    // Drag out of preview box deletes the text overlay
+                                                    if (newX < -0.06f || newX > 1.06f || newY < -0.06f || newY > 1.06f) {
+                                                        placedStamps.removeAt(idx)
+                                                    } else {
+                                                        val newSize = if (zoom != 1f) {
+                                                            (cur.fontSizeSp * zoom).coerceAtLeast(8f)
+                                                        } else {
+                                                            cur.fontSizeSp
+                                                        }
+                                                        val newRot = (cur.rotationDeg + rotation) % 360f
+                                                        placedStamps[idx] = cur.copy(
+                                                            xNorm = newX,
+                                                            yNorm = newY,
+                                                            fontSizeSp = newSize,
+                                                            rotationDeg = newRot
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
                             ) {
                                 Text(
-                                    text = stamp.text,
-                                    color = Color.White,
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-
-                        // Text Banner Overlay
-                        if (overlayBannerText.isNotBlank()) {
-                            Surface(
-                                color = Color.Black.copy(alpha = 0.65f),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .padding(horizontal = 20.dp)
-                            ) {
-                                Text(
-                                    text = overlayBannerText,
-                                    color = Color.White,
-                                    fontSize = 18.sp,
+                                    text = textOverlay.text,
+                                    color = Color(textOverlay.colorArgb),
+                                    fontSize = textOverlay.fontSizeSp.sp,
                                     fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                                    lineHeight = (textOverlay.fontSizeSp * 1.18f).sp
                                 )
                             }
                         }
@@ -1418,84 +1521,119 @@ fun ChatCameraStudioModal(
                     }
                 }
 
-                // Bottom Studio Palette, Stamps, Caption & Send Bar
+                // Bottom Studio Controls: Optional Doodle Palette + Eraser + Brush Size Slider & Clean Caption + Send Bar
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    // Brush Color Picker + Width Slider Row
-                    if (isDrawModeActive) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                    // Brush Color Picker + Eraser + Controllable Brush Size Slider (only shown when Doodle Toggle is active)
+                    AnimatedVisibility(visible = isDrawModeActive) {
+                        Surface(
+                            shape = RoundedCornerShape(18.dp),
+                            color = Color.White.copy(alpha = 0.08f),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                STUDIO_BRUSH_COLORS.forEach { colorHex ->
-                                    val selected = selectedBrushColor == colorHex
-                                    Box(
-                                        modifier = Modifier
-                                            .size(if (selected) 26.dp else 20.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(colorHex))
-                                            .border(
-                                                width = if (selected) 2.5.dp else 1.dp,
-                                                color = if (selected) Color.White else Color.White.copy(alpha = 0.4f),
-                                                shape = CircleShape
-                                            )
-                                            .clickable { selectedBrushColor = colorHex }
-                                            .testTag("studio_color_$colorHex")
-                                    )
-                                }
-                            }
-
-                            Slider(
-                                value = selectedBrushWidthDp,
-                                onValueChange = { selectedBrushWidthDp = it },
-                                valueRange = 2.5f..16f,
-                                modifier = Modifier.width(96.dp)
-                            )
-                        }
-                    }
-
-                    // Quick Stamp Stickers Strip + Filter Switcher
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        STUDIO_QUICK_STAMPS.forEachIndexed { idx, stampText ->
-                            Surface(
-                                shape = RoundedCornerShape(50),
-                                color = Color.White.copy(alpha = 0.12f),
+                            Column(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(50))
-                                    .clickable {
-                                        val nextX = (0.15f + (placedStamps.size * 0.14f) % 0.65f)
-                                        val nextY = (0.18f + (placedStamps.size * 0.12f) % 0.6f)
-                                        placedStamps.add(
-                                            PlacedStampOverlay(
-                                                id = "stamp_${System.currentTimeMillis()}_$idx",
-                                                text = stampText,
-                                                xNorm = nextX,
-                                                yNorm = nextY
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .horizontalScroll(rememberScrollState())
+                                    ) {
+                                        STUDIO_BRUSH_COLORS.forEach { colorHex ->
+                                            val selected = !isEraserMode && selectedBrushColor == colorHex
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(if (selected) 26.dp else 20.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color(colorHex))
+                                                    .border(
+                                                        width = if (selected) 2.5.dp else 1.dp,
+                                                        color = if (selected) Color.White else Color.White.copy(alpha = 0.4f),
+                                                        shape = CircleShape
+                                                    )
+                                                    .clickable {
+                                                        isEraserMode = false
+                                                        selectedBrushColor = colorHex
+                                                    }
+                                                    .testTag("studio_color_$colorHex")
                                             )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    // Eraser Toggle Button
+                                    IconButton(
+                                        onClick = { isEraserMode = !isEraserMode },
+                                        modifier = Modifier
+                                            .size(34.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                if (isEraserMode) MaterialTheme.colorScheme.primary
+                                                else Color.White.copy(alpha = 0.14f)
+                                            )
+                                            .testTag("studio_eraser_toggle_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.CleaningServices,
+                                            contentDescription = "Eraser",
+                                            tint = if (isEraserMode) MaterialTheme.colorScheme.onPrimary else Color.White,
+                                            modifier = Modifier.size(16.dp)
                                         )
                                     }
-                            ) {
-                                Text(
-                                    text = stampText,
-                                    color = Color.White,
-                                    fontSize = 12.sp,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                                )
+                                }
+
+                                // Controllable Brush / Eraser Size Slider
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Text(
+                                        text = if (isEraserMode) "Eraser" else "Size",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color.White.copy(alpha = 0.75f)
+                                    )
+                                    Slider(
+                                        value = selectedBrushWidthDp,
+                                        onValueChange = { selectedBrushWidthDp = it },
+                                        valueRange = 1.5f..28f,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(26.dp)
+                                            .testTag("studio_brush_size_slider")
+                                    )
+                                    Box(
+                                        modifier = Modifier.size(28.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(selectedBrushWidthDp.coerceIn(3f, 24f).dp)
+                                                .clip(CircleShape)
+                                                .background(
+                                                    if (isEraserMode) Color.White.copy(alpha = 0.45f)
+                                                    else Color(selectedBrushColor)
+                                                )
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -1508,17 +1646,18 @@ fun ChatCameraStudioModal(
                     ) {
                         Surface(
                             shape = RoundedCornerShape(24.dp),
-                            color = Color.White.copy(alpha = 0.14f),
+                            color = Color.White.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
                             modifier = Modifier.weight(1f)
                         ) {
                             Box(
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                                 contentAlignment = Alignment.CenterStart
                             ) {
                                 if (captionInput.isEmpty()) {
                                     Text(
                                         text = if (capturedIsVideo) "Add a caption to video…" else "Add a caption…",
-                                        color = Color.White.copy(alpha = 0.6f),
+                                        color = Color.White.copy(alpha = 0.55f),
                                         fontSize = 14.sp
                                     )
                                 }
@@ -1551,7 +1690,7 @@ fun ChatCameraStudioModal(
                                         filter = selectedFilter,
                                         strokes = studioStrokes,
                                         stamps = placedStamps,
-                                        bannerText = overlayBannerText,
+                                        bannerText = "",
                                         includeDateStamp = dateWatermarkEnabled
                                     )
                                     val rawStream = ByteArrayOutputStream()
@@ -1804,17 +1943,22 @@ fun renderFinalCompositeBitmap(
         }
     }
 
-    // Draw Placed Stamps
+    // Draw Frameless Rotated & Scaled Text Overlays
     val stampPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = android.graphics.Color.WHITE
-        textSize = (w * 0.065f).coerceAtLeast(28f)
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
     }
     for (st in stamps) {
-        canvas.drawText(st.text, st.xNorm * w, (st.yNorm * h) + stampPaint.textSize, stampPaint)
+        stampPaint.color = st.colorArgb.toInt()
+        stampPaint.textSize = (st.fontSizeSp * (w / 360f)).coerceAtLeast(16f)
+        val pxX = st.xNorm * w
+        val pxY = (st.yNorm * h) + stampPaint.textSize
+        canvas.save()
+        canvas.rotate(st.rotationDeg, pxX, pxY)
+        canvas.drawText(st.text, pxX, pxY, stampPaint)
+        canvas.restore()
     }
 
-    // Draw Text Banner Overlay
+    // Draw Text Banner Overlay if provided
     if (bannerText.isNotBlank()) {
         val bannerBg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xAA000000.toInt()

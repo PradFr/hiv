@@ -18,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -77,6 +78,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -101,6 +103,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -167,6 +170,50 @@ fun DecryptedBlobImage(
     }
 }
 
+// Helper for partial/segment stroke erasing so rubbing the eraser removes touched segments smoothly
+fun eraseStrokesNearPoint(
+    strokes: MutableList<DoodleStroke>,
+    targetPtDp: Offset,
+    eraseRadiusDp: Float
+): Boolean {
+    val rSq = eraseRadiusDp * eraseRadiusDp
+    var modified = false
+    val result = mutableListOf<DoodleStroke>()
+    for (stroke in strokes) {
+        val anyHit = stroke.pointsDp.any { pt ->
+            val dx = pt.x - targetPtDp.x
+            val dy = pt.y - targetPtDp.y
+            (dx * dx + dy * dy) <= rSq
+        }
+        if (!anyHit) {
+            result.add(stroke)
+        } else {
+            modified = true
+            var currentSegment = mutableListOf<Offset>()
+            for (pt in stroke.pointsDp) {
+                val dx = pt.x - targetPtDp.x
+                val dy = pt.y - targetPtDp.y
+                if ((dx * dx + dy * dy) > rSq) {
+                    currentSegment.add(pt)
+                } else {
+                    if (currentSegment.size >= 2) {
+                        result.add(stroke.copy(pointsDp = currentSegment.toList()))
+                    }
+                    currentSegment = mutableListOf()
+                }
+            }
+            if (currentSegment.size >= 2) {
+                result.add(stroke.copy(pointsDp = currentSegment.toList()))
+            }
+        }
+    }
+    if (modified) {
+        strokes.clear()
+        strokes.addAll(result)
+    }
+    return modified
+}
+
 // --- Couple's Interactive Note Box Component ---
 
 @Composable
@@ -211,14 +258,18 @@ fun CoupleNoteBoxView(
     var editingTextBoxId by remember { mutableStateOf<String?>(null) }
     var newTextInput by remember { mutableStateOf("") }
     var selectedNoteColor by remember { mutableStateOf(0x00000000L) } // Default Transparent
+    var selectedTextColor by remember { mutableStateOf(0xFFFFFFFFL) } // Default White text
     var isDoodlingOnNote by remember { mutableStateOf(false) }
+    var isNoteEraserMode by remember { mutableStateOf(false) }
     var isTransformingDoodle by remember { mutableStateOf(false) }
     var selectedDoodleColorHex by remember { mutableStateOf(0xFFEC4899L) }
-    var selectedDoodleStrokeWidth by remember { mutableFloatStateOf(3.5f) }
-    var selectedItemId by remember { mutableStateOf<String?>(null) } // Text or Image ID selected for move/resize
+    var selectedDoodleStrokeWidth by remember { mutableFloatStateOf(4.5f) }
+    var selectedItemId by remember { mutableStateOf<String?>(null) }
     val noteDoodleStrokes = remember { mutableStateListOf<DoodleStroke>() }
     val activeDoodleStroke = remember { mutableStateListOf<Offset>() }
     var showCleanConfirmDialog by remember { mutableStateOf(false) }
+    var canvasWidthDp by remember { mutableFloatStateOf(340f) }
+    var canvasHeightDp by remember { mutableFloatStateOf(310f) }
 
     val stickyPalette = remember {
         listOf(
@@ -232,6 +283,18 @@ fun CoupleNoteBoxView(
         )
     }
 
+    val textColorPalette = remember {
+        listOf(
+            0xFFFFFFFFL, // Pure White
+            0xFFEC4899L, // Vibrant Pink
+            0xFF8B5CF6L, // Bright Purple
+            0xFF0EA5E9L, // Sky Blue
+            0xFF10B981L, // Mint Green
+            0xFFF59E0BL, // Golden Amber
+            0xFF0F172AL  // Charcoal
+        )
+    }
+
     val doodlePenPalette = remember {
         listOf(
             0xFFEC4899L, // Rose Pink
@@ -240,7 +303,7 @@ fun CoupleNoteBoxView(
             0xFF10B981L, // Emerald
             0xFFF59E0BL, // Amber
             0xFFEF4444L, // Coral Red
-            0xFF1E293BL  // Charcoal Ink
+            0xFFFFFFFFL  // Pure White Ink
         )
     }
 
@@ -261,17 +324,18 @@ fun CoupleNoteBoxView(
                     val newImg = CoupleNoteImage(
                         id = UUID.randomUUID().toString(),
                         imageBlobOrUri = blobName,
-                        xOffsetDp = 24f + (myNote.images.size * 28f) % 140f,
-                        yOffsetDp = 24f + (myNote.images.size * 22f) % 95f,
-                        widthDp = 96f,
-                        heightDp = 104f
+                        xOffsetDp = 36f + (myNote.images.size * 28f) % 140f,
+                        yOffsetDp = 36f + (myNote.images.size * 22f) % 95f,
+                        widthDp = 104f,
+                        heightDp = 104f,
+                        rotationDeg = 0f
                     )
                     val updatedImages = myNote.images + newImg
                     val updatedNote = myNote.copy(images = updatedImages, lastUpdatedAtMs = System.currentTimeMillis())
                     myNote = updatedNote
                     selectedItemId = newImg.id
                     CoupleNotePersistence.saveNote(context, spaceCode, updatedNote)
-                    Toast.makeText(context, "Polaroid added! Drag to place or pull corner to resize.", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Photo added! Pinch to zoom/rotate, or drag out of note to delete.", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -284,21 +348,34 @@ fun CoupleNoteBoxView(
             .testTag("couple_note_box_card"),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // --- BLANK MINIMAL CANVAS SURFACE ---
-        val dotColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+        // --- DISTINCT CANVAS SURFACE (Visually distinct from the #141416 Chat Background) ---
+        val dotColor = Color(0xFFA5B4FC).copy(alpha = 0.16f)
         val boardBgColor = if (isViewingMyNote) {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f)
+            Color(0xFF282438) // Warm Twilight Plum-Slate for My Note
         } else {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f)
+            Color(0xFF212738) // Deep Midnight Indigo-Slate for Partner's Note
+        }
+        val boardBorderColor = if (isViewingMyNote) {
+            Color(0xFF4C446B)
+        } else {
+            Color(0xFF3B4561)
         }
 
         Surface(
             shape = RoundedCornerShape(22.dp),
             color = boardBgColor,
+            border = BorderStroke(1.2.dp, boardBorderColor),
+            shadowElevation = 4.dp,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(310.dp)
                 .clip(RoundedCornerShape(22.dp))
+                .onSizeChanged { sz ->
+                    if (sz.width > 0 && sz.height > 0) {
+                        canvasWidthDp = sz.width / density.density
+                        canvasHeightDp = sz.height / density.density
+                    }
+                }
                 .testTag("note_canvas_surface")
         ) {
             Box(
@@ -366,6 +443,7 @@ fun CoupleNoteBoxView(
                                 flipRotationTarget += 180f
                                 isViewingMyNote = !isViewingMyNote
                                 isDoodlingOnNote = false
+                                isNoteEraserMode = false
                                 isTransformingDoodle = false
                                 selectedItemId = null
                             }
@@ -395,418 +473,237 @@ fun CoupleNoteBoxView(
                         Text(
                             text = if (isViewingMyNote) "Blank note • Add text, photo, or doodle below" else "Blank note from $partnerName",
                             fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                            color = Color.White.copy(alpha = 0.48f)
                         )
                     }
                 }
 
-                    // 1. Render Placed Polaroid Photos (Movable & Resizable)
-                    val imagesToRender = if (isViewingMyNote) myNote.images else currentNote.images
-                    imagesToRender.forEach { img ->
-                        val isSelected = isViewingMyNote && selectedItemId == img.id
-
-                        Box(
-                            modifier = Modifier
-                                .offset {
-                                    IntOffset(
-                                        (img.xOffsetDp * density.density).roundToInt(),
-                                        (img.yOffsetDp * density.density).roundToInt()
-                                    )
-                                }
-                                .size(width = img.widthDp.dp, height = img.heightDp.dp)
-                                .then(
-                                    if (isViewingMyNote && !isDoodlingOnNote) {
-                                        Modifier.pointerInput(img.id) {
-                                            detectDragGestures(
-                                                onDragStart = { selectedItemId = img.id },
-                                                onDrag = { change, dragAmount ->
-                                                    change.consume()
-                                                    val currentImg = myNote.images.firstOrNull { it.id == img.id } ?: img
-                                                    val newX = (currentImg.xOffsetDp + dragAmount.x / density.density).coerceIn(0f, 260f)
-                                                    val newY = (currentImg.yOffsetDp + dragAmount.y / density.density).coerceIn(0f, 220f)
-                                                    myNote = myNote.copy(
-                                                        images = myNote.images.map {
-                                                            if (it.id == img.id) it.copy(xOffsetDp = newX, yOffsetDp = newY) else it
-                                                        }
-                                                    )
-                                                },
-                                                onDragEnd = {
-                                                    CoupleNotePersistence.saveNote(context, spaceCode, myNote)
-                                                }
-                                            )
-                                        }
-                                    } else Modifier
+                // 1. Render Placed Images (Frameless, Unlimited Zoom, Two-Finger Rotate, Drag Out of Note to Delete)
+                val imagesToRender = if (isViewingMyNote) myNote.images else currentNote.images
+                imagesToRender.forEach { img ->
+                    Box(
+                        modifier = Modifier
+                            .offset {
+                                IntOffset(
+                                    (img.xOffsetDp * density.density).roundToInt(),
+                                    (img.yOffsetDp * density.density).roundToInt()
                                 )
-                        ) {
-                            // Polaroid-style Frame
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = Color(0xFFFFFDF9),
-                                shadowElevation = if (isSelected) 8.dp else 4.dp,
-                                border = BorderStroke(
-                                    width = if (isSelected) 2.dp else 1.dp,
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary else Color(0xFFE2E8F0)
-                                ),
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clickable(enabled = isViewingMyNote && !isDoodlingOnNote) {
-                                        selectedItemId = img.id
-                                    }
-                            ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(top = 5.dp, start = 5.dp, end = 5.dp, bottom = 12.dp)
-                                ) {
-                                    DecryptedBlobImage(
-                                        blobName = img.imageBlobOrUri,
-                                        contentDescription = "Note attached photo",
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .clip(RoundedCornerShape(6.dp))
-                                    )
-                                }
                             }
+                            .size(width = img.widthDp.dp, height = img.heightDp.dp)
+                            .graphicsLayer {
+                                rotationZ = img.rotationDeg
+                            }
+                            .then(
+                                if (isViewingMyNote && !isDoodlingOnNote) {
+                                    Modifier.pointerInput(img.id, canvasWidthDp, canvasHeightDp) {
+                                        detectTransformGestures { _, pan, zoom, rotation ->
+                                            val currentImg = myNote.images.firstOrNull { it.id == img.id } ?: return@detectTransformGestures
+                                            val newW = (currentImg.widthDp * zoom).coerceAtLeast(24f)
+                                            val newH = (currentImg.heightDp * zoom).coerceAtLeast(24f)
+                                            val newRot = (currentImg.rotationDeg + rotation) % 360f
+                                            val newX = currentImg.xOffsetDp + pan.x / density.density
+                                            val newY = currentImg.yOffsetDp + pan.y / density.density
 
-                            // Top Washi Tape Accent on Polaroid
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.TopCenter)
-                                    .offset(y = (-4).dp)
-                                    .width(32.dp)
-                                    .height(9.dp)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(Color(0xFFFDE047).copy(alpha = 0.78f))
+                                            val centerX = newX + newW * 0.5f
+                                            val centerY = newY + newH * 0.5f
+                                            val isDraggedOutside = centerX < -12f ||
+                                                centerX > canvasWidthDp + 12f ||
+                                                centerY < -12f ||
+                                                centerY > canvasHeightDp + 12f
+
+                                            if (isDraggedOutside) {
+                                                val updated = myNote.copy(
+                                                    images = myNote.images.filterNot { it.id == img.id },
+                                                    lastUpdatedAtMs = System.currentTimeMillis()
+                                                )
+                                                myNote = updated
+                                                CoupleNotePersistence.saveNote(context, spaceCode, updated)
+                                            } else {
+                                                val updated = myNote.copy(
+                                                    images = myNote.images.map {
+                                                        if (it.id == img.id) {
+                                                            it.copy(
+                                                                xOffsetDp = newX,
+                                                                yOffsetDp = newY,
+                                                                widthDp = newW,
+                                                                heightDp = newH,
+                                                                rotationDeg = newRot
+                                                            )
+                                                        } else it
+                                                    },
+                                                    lastUpdatedAtMs = System.currentTimeMillis()
+                                                )
+                                                myNote = updated
+                                                CoupleNotePersistence.saveNote(context, spaceCode, updated)
+                                            }
+                                        }
+                                    }
+                                } else Modifier
                             )
-
-                            // If selected in "My Note": show Delete badge & Corner Resize handle
-                            if (isSelected) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = MaterialTheme.colorScheme.error,
-                                    shadowElevation = 4.dp,
-                                    modifier = Modifier
-                                        .align(Alignment.TopEnd)
-                                        .offset(x = 8.dp, y = (-8).dp)
-                                        .size(24.dp)
-                                        .clip(CircleShape)
-                                        .clickable {
-                                            val updated = myNote.copy(
-                                                images = myNote.images.filterNot { it.id == img.id }
-                                            )
-                                            myNote = updated
-                                            CoupleNotePersistence.saveNote(context, spaceCode, updated)
-                                            selectedItemId = null
-                                        }
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.Close,
-                                            contentDescription = "Delete photo",
-                                            tint = MaterialTheme.colorScheme.onError,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                    }
-                                }
-
-                                Surface(
-                                    shape = CircleShape,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    shadowElevation = 5.dp,
-                                    modifier = Modifier
-                                        .align(Alignment.BottomEnd)
-                                        .offset(x = 8.dp, y = 8.dp)
-                                        .size(26.dp)
-                                        .clip(CircleShape)
-                                        .pointerInput(img.id + "_resize") {
-                                            detectDragGestures(
-                                                onDrag = { change, dragAmount ->
-                                                    change.consume()
-                                                    val currentImg = myNote.images.firstOrNull { it.id == img.id } ?: img
-                                                    val newW = (currentImg.widthDp + dragAmount.x / density.density).coerceIn(56f, 240f)
-                                                    val newH = (currentImg.heightDp + dragAmount.y / density.density).coerceIn(56f, 240f)
-                                                    myNote = myNote.copy(
-                                                        images = myNote.images.map {
-                                                            if (it.id == img.id) it.copy(widthDp = newW, heightDp = newH) else it
-                                                        }
-                                                    )
-                                                },
-                                                onDragEnd = {
-                                                    CoupleNotePersistence.saveNote(context, spaceCode, myNote)
-                                                }
-                                            )
-                                        }
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.OpenInFull,
-                                            contentDescription = "Drag to resize photo",
-                                            tint = MaterialTheme.colorScheme.onPrimary,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // 2. Render Placed Sticky Note Cards (Movable, Resizable & Editable)
-                    val textsToRender = if (isViewingMyNote) myNote.textItems else currentNote.textItems
-                    textsToRender.forEach { textBox ->
-                        val isSelected = isViewingMyNote && selectedItemId == textBox.id
-
-                        Box(
-                            modifier = Modifier
-                                .offset {
-                                    IntOffset(
-                                        (textBox.xOffsetDp * density.density).roundToInt(),
-                                        (textBox.yOffsetDp * density.density).roundToInt()
-                                    )
-                                }
-                                .size(width = textBox.widthDp.dp, height = textBox.heightDp.dp)
-                                .then(
-                                    if (isViewingMyNote && !isDoodlingOnNote) {
-                                        Modifier.pointerInput(textBox.id) {
-                                            detectDragGestures(
-                                                onDragStart = { selectedItemId = textBox.id },
-                                                onDrag = { change, dragAmount ->
-                                                    change.consume()
-                                                    val currentBox = myNote.textItems.firstOrNull { it.id == textBox.id } ?: textBox
-                                                    val newX = (currentBox.xOffsetDp + dragAmount.x / density.density).coerceIn(0f, 260f)
-                                                    val newY = (currentBox.yOffsetDp + dragAmount.y / density.density).coerceIn(0f, 230f)
-                                                    myNote = myNote.copy(
-                                                        textItems = myNote.textItems.map {
-                                                            if (it.id == textBox.id) it.copy(xOffsetDp = newX, yOffsetDp = newY) else it
-                                                        }
-                                                    )
-                                                },
-                                                onDragEnd = {
-                                                    CoupleNotePersistence.saveNote(context, spaceCode, myNote)
-                                                }
-                                            )
-                                        }
-                                    } else Modifier
-                                )
-                        ) {
-                        val isTransparent = textBox.colorArgb == 0x00000000L || textBox.colorArgb == 0L
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = if (isTransparent) Color.Transparent else Color(textBox.colorArgb),
-                            shadowElevation = if (isTransparent) 0.dp else if (isSelected) 6.dp else 2.dp,
-                            border = if (isSelected) {
-                                BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-                            } else if (!isTransparent) {
-                                BorderStroke(0.6.dp, Color.White.copy(alpha = 0.2f))
-                            } else null,
+                    ) {
+                        DecryptedBlobImage(
+                            blobName = img.imageBlobOrUri,
+                            contentDescription = "Note attached photo",
+                            contentScale = ContentScale.Crop,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .clickable(enabled = isViewingMyNote && !isDoodlingOnNote) {
-                                    selectedItemId = textBox.id
-                                }
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = textBox.text,
-                                    fontSize = textBox.fontSizeSp.sp,
-                                    lineHeight = (textBox.fontSizeSp * 1.28f).sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                                    color = if (isTransparent) Color.White else Color(0xFF1E293B),
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-
-                            // If selected in "My Note": show Edit button, Delete button & Corner Resize handle
-                            if (isSelected) {
-                                // Edit Text button at top-left
-                                Surface(
-                                    shape = CircleShape,
-                                    color = MaterialTheme.colorScheme.secondaryContainer,
-                                    shadowElevation = 4.dp,
-                                    modifier = Modifier
-                                        .align(Alignment.TopStart)
-                                        .offset(x = (-8).dp, y = (-8).dp)
-                                        .size(24.dp)
-                                        .clip(CircleShape)
-                                        .clickable {
-                                            editingTextBoxId = textBox.id
-                                            newTextInput = textBox.text
-                                            selectedNoteColor = textBox.colorArgb
-                                            showAddTextDialog = true
-                                        }
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.Edit,
-                                            contentDescription = "Edit sticky note",
-                                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                            modifier = Modifier.size(13.dp)
-                                        )
-                                    }
-                                }
-
-                                // Delete badge at top-right
-                                Surface(
-                                    shape = CircleShape,
-                                    color = MaterialTheme.colorScheme.error,
-                                    shadowElevation = 4.dp,
-                                    modifier = Modifier
-                                        .align(Alignment.TopEnd)
-                                        .offset(x = 8.dp, y = (-8).dp)
-                                        .size(24.dp)
-                                        .clip(CircleShape)
-                                        .clickable {
-                                            val updated = myNote.copy(
-                                                textItems = myNote.textItems.filterNot { it.id == textBox.id }
-                                            )
-                                            myNote = updated
-                                            CoupleNotePersistence.saveNote(context, spaceCode, updated)
-                                            selectedItemId = null
-                                        }
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.Close,
-                                            contentDescription = "Delete text box",
-                                            tint = MaterialTheme.colorScheme.onError,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                    }
-                                }
-
-                                // Resize handle at bottom-right corner
-                                Surface(
-                                    shape = CircleShape,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    shadowElevation = 5.dp,
-                                    modifier = Modifier
-                                        .align(Alignment.BottomEnd)
-                                        .offset(x = 8.dp, y = 8.dp)
-                                        .size(26.dp)
-                                        .clip(CircleShape)
-                                        .pointerInput(textBox.id + "_resize") {
-                                            detectDragGestures(
-                                                onDrag = { change, dragAmount ->
-                                                    change.consume()
-                                                    val currentBox = myNote.textItems.firstOrNull { it.id == textBox.id } ?: textBox
-                                                    val newW = (currentBox.widthDp + dragAmount.x / density.density).coerceIn(84f, 280f)
-                                                    val newH = (currentBox.heightDp + dragAmount.y / density.density).coerceIn(44f, 220f)
-                                                    val newFontSize = (11f + (newW - 84f) * 0.04f).coerceIn(11f, 22f)
-                                                    myNote = myNote.copy(
-                                                        textItems = myNote.textItems.map {
-                                                            if (it.id == textBox.id) {
-                                                                it.copy(widthDp = newW, heightDp = newH, fontSizeSp = newFontSize)
-                                                            } else it
-                                                        }
-                                                    )
-                                                },
-                                                onDragEnd = {
-                                                    CoupleNotePersistence.saveNote(context, spaceCode, myNote)
-                                                }
-                                            )
-                                        }
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.OpenInFull,
-                                            contentDescription = "Drag to resize text box",
-                                            tint = MaterialTheme.colorScheme.onPrimary,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                                .clip(RoundedCornerShape(10.dp))
+                        )
                     }
+                }
 
-                    // 3. Render Doodles on Note (With Translate & Scale for Movable & Resizable Doodle)
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        val strokeList = if (isViewingMyNote) noteDoodleStrokes else currentNote.doodleStrokes
-                        val offX = if (isViewingMyNote) myNote.doodleOffsetXDp else currentNote.doodleOffsetXDp
-                        val offY = if (isViewingMyNote) myNote.doodleOffsetYDp else currentNote.doodleOffsetYDp
-                        val scaleFactor = if (isViewingMyNote) myNote.doodleScale else currentNote.doodleScale
-
-                        drawContext.canvas.save()
-                        drawContext.canvas.translate(offX * density.density, offY * density.density)
-                        drawContext.canvas.translate(size.width / 2f, size.height / 2f)
-                        drawContext.canvas.scale(scaleFactor, scaleFactor)
-                        drawContext.canvas.translate(-size.width / 2f, -size.height / 2f)
-
-                        strokeList.forEach { stroke ->
-                            if (stroke.pointsDp.size > 1) {
-                                val path = Path()
-                                val first = stroke.pointsDp[0]
-                                path.moveTo(first.x * density.density, first.y * density.density)
-                                for (i in 1 until stroke.pointsDp.size) {
-                                    val pt = stroke.pointsDp[i]
-                                    path.lineTo(pt.x * density.density, pt.y * density.density)
-                                }
-                                drawPath(
-                                    path = path,
-                                    color = Color(stroke.colorArgb),
-                                    style = Stroke(
-                                        width = stroke.strokeWidthDp * density.density,
-                                        cap = StrokeCap.Round,
-                                        join = StrokeJoin.Round
-                                    )
+                // 2. Render Placed Text Items (Frameless — NO box/border, Unlimited Zoom, Two-Finger Rotate, Drag Out of Note to Delete)
+                val textsToRender = if (isViewingMyNote) myNote.textItems else currentNote.textItems
+                textsToRender.forEach { textBox ->
+                    Box(
+                        modifier = Modifier
+                            .offset {
+                                IntOffset(
+                                    (textBox.xOffsetDp * density.density).roundToInt(),
+                                    (textBox.yOffsetDp * density.density).roundToInt()
                                 )
                             }
-                        }
+                            .size(width = textBox.widthDp.dp, height = textBox.heightDp.dp)
+                            .graphicsLayer {
+                                rotationZ = textBox.rotationDeg
+                            }
+                            .then(
+                                if (isViewingMyNote && !isDoodlingOnNote) {
+                                    Modifier.pointerInput(textBox.id, canvasWidthDp, canvasHeightDp) {
+                                        detectTransformGestures { _, pan, zoom, rotation ->
+                                            val currentBox = myNote.textItems.firstOrNull { it.id == textBox.id } ?: return@detectTransformGestures
+                                            val newW = (currentBox.widthDp * zoom).coerceAtLeast(36f)
+                                            val newH = (currentBox.heightDp * zoom).coerceAtLeast(24f)
+                                            val newFontSize = (currentBox.fontSizeSp * zoom).coerceAtLeast(6f)
+                                            val newRot = (currentBox.rotationDeg + rotation) % 360f
+                                            val newX = currentBox.xOffsetDp + pan.x / density.density
+                                            val newY = currentBox.yOffsetDp + pan.y / density.density
 
-                        // Active live stroke while drawing on note
-                        if (isDoodlingOnNote && activeDoodleStroke.size > 1) {
+                                            val centerX = newX + newW * 0.5f
+                                            val centerY = newY + newH * 0.5f
+                                            val isDraggedOutside = centerX < -12f ||
+                                                centerX > canvasWidthDp + 12f ||
+                                                centerY < -12f ||
+                                                centerY > canvasHeightDp + 12f
+
+                                            if (isDraggedOutside) {
+                                                val updated = myNote.copy(
+                                                    textItems = myNote.textItems.filterNot { it.id == textBox.id },
+                                                    lastUpdatedAtMs = System.currentTimeMillis()
+                                                )
+                                                myNote = updated
+                                                CoupleNotePersistence.saveNote(context, spaceCode, updated)
+                                            } else {
+                                                val updated = myNote.copy(
+                                                    textItems = myNote.textItems.map {
+                                                        if (it.id == textBox.id) {
+                                                            it.copy(
+                                                                xOffsetDp = newX,
+                                                                yOffsetDp = newY,
+                                                                widthDp = newW,
+                                                                heightDp = newH,
+                                                                fontSizeSp = newFontSize,
+                                                                rotationDeg = newRot
+                                                            )
+                                                        } else it
+                                                    },
+                                                    lastUpdatedAtMs = System.currentTimeMillis()
+                                                )
+                                                myNote = updated
+                                                CoupleNotePersistence.saveNote(context, spaceCode, updated)
+                                            }
+                                        }
+                                    }
+                                } else Modifier
+                            )
+                            .clickable(enabled = isViewingMyNote && !isDoodlingOnNote) {
+                                editingTextBoxId = textBox.id
+                                newTextInput = textBox.text
+                                selectedNoteColor = textBox.colorArgb
+                                selectedTextColor = textBox.textColorArgb
+                                showAddTextDialog = true
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = textBox.text,
+                            fontSize = textBox.fontSizeSp.sp,
+                            lineHeight = (textBox.fontSizeSp * 1.22f).sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            color = Color(textBox.textColorArgb)
+                        )
+                    }
+                }
+
+                // 3. Render Doodles on Note (With Translate & Scale for Movable & Resizable Doodle)
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val strokeList = if (isViewingMyNote) noteDoodleStrokes else currentNote.doodleStrokes
+                    val offX = if (isViewingMyNote) myNote.doodleOffsetXDp else currentNote.doodleOffsetXDp
+                    val offY = if (isViewingMyNote) myNote.doodleOffsetYDp else currentNote.doodleOffsetYDp
+                    val scaleFactor = if (isViewingMyNote) myNote.doodleScale else currentNote.doodleScale
+
+                    drawContext.canvas.save()
+                    drawContext.canvas.translate(offX * density.density, offY * density.density)
+                    drawContext.canvas.translate(size.width / 2f, size.height / 2f)
+                    drawContext.canvas.scale(scaleFactor, scaleFactor)
+                    drawContext.canvas.translate(-size.width / 2f, -size.height / 2f)
+
+                    strokeList.forEach { stroke ->
+                        if (stroke.pointsDp.size > 1) {
                             val path = Path()
-                            path.moveTo(activeDoodleStroke[0].x * density.density, activeDoodleStroke[0].y * density.density)
-                            for (i in 1 until activeDoodleStroke.size) {
-                                path.lineTo(activeDoodleStroke[i].x * density.density, activeDoodleStroke[i].y * density.density)
+                            val first = stroke.pointsDp[0]
+                            path.moveTo(first.x * density.density, first.y * density.density)
+                            for (i in 1 until stroke.pointsDp.size) {
+                                val pt = stroke.pointsDp[i]
+                                path.lineTo(pt.x * density.density, pt.y * density.density)
                             }
                             drawPath(
                                 path = path,
-                                color = Color(selectedDoodleColorHex),
+                                color = Color(stroke.colorArgb),
                                 style = Stroke(
-                                    width = selectedDoodleStrokeWidth * density.density,
+                                    width = stroke.strokeWidthDp * density.density,
                                     cap = StrokeCap.Round,
                                     join = StrokeJoin.Round
                                 )
                             )
                         }
-
-                        drawContext.canvas.restore()
                     }
 
-                    // Doodle Touch Handler (Drawing mode)
-                    if (isViewingMyNote && isDoodlingOnNote && !isTransformingDoodle) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .pointerInput(selectedDoodleColorHex, selectedDoodleStrokeWidth) {
-                                    detectDragGestures(
-                                        onDragStart = { offset ->
-                                            activeDoodleStroke.clear()
-                                            val ptDp = with(density) { Offset(offset.x.toDp().value, offset.y.toDp().value) }
-                                            activeDoodleStroke.add(ptDp)
-                                        },
-                                        onDrag = { change, _ ->
-                                            change.consume()
-                                            val ptDp = with(density) { Offset(change.position.x.toDp().value, change.position.y.toDp().value) }
-                                            activeDoodleStroke.add(ptDp)
-                                        },
-                                        onDragEnd = {
-                                            if (activeDoodleStroke.isNotEmpty()) {
-                                                val newStroke = DoodleStroke(
-                                                    pointsDp = activeDoodleStroke.toList(),
-                                                    colorArgb = selectedDoodleColorHex,
-                                                    strokeWidthDp = selectedDoodleStrokeWidth
-                                                )
-                                                noteDoodleStrokes.add(newStroke)
-                                                activeDoodleStroke.clear()
+                    // Active live stroke while drawing on note
+                    if (isDoodlingOnNote && !isNoteEraserMode && activeDoodleStroke.size > 1) {
+                        val path = Path()
+                        path.moveTo(activeDoodleStroke[0].x * density.density, activeDoodleStroke[0].y * density.density)
+                        for (i in 1 until activeDoodleStroke.size) {
+                            path.lineTo(activeDoodleStroke[i].x * density.density, activeDoodleStroke[i].y * density.density)
+                        }
+                        drawPath(
+                            path = path,
+                            color = Color(selectedDoodleColorHex),
+                            style = Stroke(
+                                width = selectedDoodleStrokeWidth * density.density,
+                                cap = StrokeCap.Round,
+                                join = StrokeJoin.Round
+                            )
+                        )
+                    }
+
+                    drawContext.canvas.restore()
+                }
+
+                // Doodle Touch Handler (Drawing & Eraser mode)
+                if (isViewingMyNote && isDoodlingOnNote && !isTransformingDoodle) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(selectedDoodleColorHex, selectedDoodleStrokeWidth, isNoteEraserMode) {
+                                detectDragGestures(
+                                    onDragStart = { offset ->
+                                        activeDoodleStroke.clear()
+                                        val ptDp = with(density) { Offset(offset.x.toDp().value, offset.y.toDp().value) }
+                                        if (isNoteEraserMode) {
+                                            val eraseRadius = (selectedDoodleStrokeWidth * 1.8f + 10f)
+                                            if (eraseStrokesNearPoint(noteDoodleStrokes, ptDp, eraseRadius)) {
                                                 val updatedNote = myNote.copy(
                                                     doodleStrokes = noteDoodleStrokes.toList(),
                                                     lastUpdatedAtMs = System.currentTimeMillis()
@@ -814,192 +711,233 @@ fun CoupleNoteBoxView(
                                                 myNote = updatedNote
                                                 CoupleNotePersistence.saveNote(context, spaceCode, updatedNote)
                                             }
-                                        },
-                                        onDragCancel = {
-                                            activeDoodleStroke.clear()
+                                        } else {
+                                            activeDoodleStroke.add(ptDp)
                                         }
-                                    )
-                                }
-                        )
-                    }
+                                    },
+                                    onDrag = { change, _ ->
+                                        change.consume()
+                                        val ptDp = with(density) { Offset(change.position.x.toDp().value, change.position.y.toDp().value) }
+                                        if (isNoteEraserMode) {
+                                            val eraseRadius = (selectedDoodleStrokeWidth * 1.8f + 10f)
+                                            if (eraseStrokesNearPoint(noteDoodleStrokes, ptDp, eraseRadius)) {
+                                                val updatedNote = myNote.copy(
+                                                    doodleStrokes = noteDoodleStrokes.toList(),
+                                                    lastUpdatedAtMs = System.currentTimeMillis()
+                                                )
+                                                myNote = updatedNote
+                                                CoupleNotePersistence.saveNote(context, spaceCode, updatedNote)
+                                            }
+                                        } else {
+                                            activeDoodleStroke.add(ptDp)
+                                        }
+                                    },
+                                    onDragEnd = {
+                                        if (!isNoteEraserMode && activeDoodleStroke.isNotEmpty()) {
+                                            val newStroke = DoodleStroke(
+                                                pointsDp = activeDoodleStroke.toList(),
+                                                colorArgb = selectedDoodleColorHex,
+                                                strokeWidthDp = selectedDoodleStrokeWidth
+                                            )
+                                            noteDoodleStrokes.add(newStroke)
+                                            activeDoodleStroke.clear()
+                                            val updatedNote = myNote.copy(
+                                                doodleStrokes = noteDoodleStrokes.toList(),
+                                                lastUpdatedAtMs = System.currentTimeMillis()
+                                            )
+                                            myNote = updatedNote
+                                            CoupleNotePersistence.saveNote(context, spaceCode, updatedNote)
+                                        }
+                                    },
+                                    onDragCancel = {
+                                        activeDoodleStroke.clear()
+                                    }
+                                )
+                            }
+                    )
+                }
 
-                    // Doodle Move & Resize Overlay Frame (When isTransformingDoodle == true)
-                    if (isViewingMyNote && isTransformingDoodle && noteDoodleStrokes.isNotEmpty()) {
+                // Doodle Move & Resize Overlay Frame (When isTransformingDoodle == true)
+                if (isViewingMyNote && isTransformingDoodle && noteDoodleStrokes.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(10.dp)
+                            .border(
+                                BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.75f)),
+                                RoundedCornerShape(16.dp)
+                            )
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+                    ) {
+                        // Top Pill with scale info & zoom controls
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                                shadowElevation = 2.dp
+                            ) {
+                                Text(
+                                    text = "Art Scale ${(myNote.doodleScale * 100).toInt()}% • Drag center",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
+
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.surface,
+                                    shadowElevation = 2.dp,
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .clickable {
+                                            val newScale = (myNote.doodleScale - 0.15f).coerceIn(0.35f, 3f)
+                                            val updated = myNote.copy(doodleScale = newScale)
+                                            myNote = updated
+                                            CoupleNotePersistence.saveNote(context, spaceCode, updated)
+                                        }
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Default.ZoomOut, contentDescription = "Shrink doodle", modifier = Modifier.size(16.dp))
+                                    }
+                                }
+
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.surface,
+                                    shadowElevation = 2.dp,
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .clickable {
+                                            val newScale = (myNote.doodleScale + 0.15f).coerceIn(0.35f, 3f)
+                                            val updated = myNote.copy(doodleScale = newScale)
+                                            myNote = updated
+                                            CoupleNotePersistence.saveNote(context, spaceCode, updated)
+                                        }
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Default.ZoomIn, contentDescription = "Enlarge doodle", modifier = Modifier.size(16.dp))
+                                    }
+                                }
+
+                                Button(
+                                    onClick = { isTransformingDoodle = false },
+                                    shape = RoundedCornerShape(50),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    modifier = Modifier.height(28.dp)
+                                ) {
+                                    Text("Done", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+
+                        // Center Drag Move Handle for Doodle
                         Box(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .padding(10.dp)
-                                .border(
-                                    BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.75f)),
-                                    RoundedCornerShape(16.dp)
-                                )
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+                                .align(Alignment.Center)
+                                .size(56.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primaryContainer)
+                                .border(2.dp, MaterialTheme.colorScheme.primary, CircleShape)
+                                .pointerInput(Unit) {
+                                    detectDragGestures(
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            val newX = (myNote.doodleOffsetXDp + dragAmount.x / density.density).coerceIn(-140f, 140f)
+                                            val newY = (myNote.doodleOffsetYDp + dragAmount.y / density.density).coerceIn(-110f, 110f)
+                                            myNote = myNote.copy(doodleOffsetXDp = newX, doodleOffsetYDp = newY)
+                                        },
+                                        onDragEnd = {
+                                            CoupleNotePersistence.saveNote(context, spaceCode, myNote)
+                                        }
+                                    )
+                                },
+                            contentAlignment = Alignment.Center
                         ) {
-                            // Top Pill with scale info & zoom controls
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Surface(
-                                    shape = RoundedCornerShape(50),
-                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
-                                    shadowElevation = 2.dp
-                                ) {
-                                    Text(
-                                        text = "Art Scale ${(myNote.doodleScale * 100).toInt()}% • Drag center",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            Icon(
+                                imageVector = Icons.Default.OpenWith,
+                                contentDescription = "Drag to move doodle across note board",
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+
+                        // Corner Resize Handle for Doodle
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primary,
+                            shadowElevation = 5.dp,
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(6.dp)
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .pointerInput(Unit) {
+                                    detectDragGestures(
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            val delta = (dragAmount.x + dragAmount.y) / 100f
+                                            val newScale = (myNote.doodleScale + delta).coerceIn(0.35f, 3.0f)
+                                            myNote = myNote.copy(doodleScale = newScale)
+                                        },
+                                        onDragEnd = {
+                                            CoupleNotePersistence.saveNote(context, spaceCode, myNote)
+                                        }
                                     )
                                 }
-
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = MaterialTheme.colorScheme.surface,
-                                        shadowElevation = 2.dp,
-                                        modifier = Modifier
-                                            .size(28.dp)
-                                            .clip(CircleShape)
-                                            .clickable {
-                                                val newScale = (myNote.doodleScale - 0.15f).coerceIn(0.35f, 3f)
-                                                val updated = myNote.copy(doodleScale = newScale)
-                                                myNote = updated
-                                                CoupleNotePersistence.saveNote(context, spaceCode, updated)
-                                            }
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Icon(Icons.Default.ZoomOut, contentDescription = "Shrink doodle", modifier = Modifier.size(16.dp))
-                                        }
-                                    }
-
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = MaterialTheme.colorScheme.surface,
-                                        shadowElevation = 2.dp,
-                                        modifier = Modifier
-                                            .size(28.dp)
-                                            .clip(CircleShape)
-                                            .clickable {
-                                                val newScale = (myNote.doodleScale + 0.15f).coerceIn(0.35f, 3f)
-                                                val updated = myNote.copy(doodleScale = newScale)
-                                                myNote = updated
-                                                CoupleNotePersistence.saveNote(context, spaceCode, updated)
-                                            }
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Icon(Icons.Default.ZoomIn, contentDescription = "Enlarge doodle", modifier = Modifier.size(16.dp))
-                                        }
-                                    }
-
-                                    Button(
-                                        onClick = { isTransformingDoodle = false },
-                                        shape = RoundedCornerShape(50),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                        modifier = Modifier.height(28.dp)
-                                    ) {
-                                        Text("Done", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-
-                            // Center Drag Move Handle for Doodle
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .size(56.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primaryContainer)
-                                    .border(2.dp, MaterialTheme.colorScheme.primary, CircleShape)
-                                    .pointerInput(Unit) {
-                                        detectDragGestures(
-                                            onDrag = { change, dragAmount ->
-                                                change.consume()
-                                                val newX = (myNote.doodleOffsetXDp + dragAmount.x / density.density).coerceIn(-140f, 140f)
-                                                val newY = (myNote.doodleOffsetYDp + dragAmount.y / density.density).coerceIn(-110f, 110f)
-                                                myNote = myNote.copy(doodleOffsetXDp = newX, doodleOffsetYDp = newY)
-                                            },
-                                            onDragEnd = {
-                                                CoupleNotePersistence.saveNote(context, spaceCode, myNote)
-                                            }
-                                        )
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
                                 Icon(
-                                    imageVector = Icons.Default.OpenWith,
-                                    contentDescription = "Drag to move doodle across note board",
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.size(26.dp)
+                                    imageVector = Icons.Default.OpenInFull,
+                                    contentDescription = "Drag to resize doodle",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.size(16.dp)
                                 )
-                            }
-
-                            // Corner Resize Handle for Doodle
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.primary,
-                                shadowElevation = 5.dp,
-                                modifier = Modifier
-                                    .align(Alignment.BottomEnd)
-                                    .padding(6.dp)
-                                    .size(34.dp)
-                                    .clip(CircleShape)
-                                    .pointerInput(Unit) {
-                                        detectDragGestures(
-                                            onDrag = { change, dragAmount ->
-                                                change.consume()
-                                                val delta = (dragAmount.x + dragAmount.y) / 100f
-                                                val newScale = (myNote.doodleScale + delta).coerceIn(0.35f, 3.0f)
-                                                myNote = myNote.copy(doodleScale = newScale)
-                                            },
-                                            onDragEnd = {
-                                                CoupleNotePersistence.saveNote(context, spaceCode, myNote)
-                                            }
-                                        )
-                                    }
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Default.OpenInFull,
-                                        contentDescription = "Drag to resize doodle",
-                                        tint = MaterialTheme.colorScheme.onPrimary,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
                             }
                         }
                     }
                 }
             }
+        }
 
-            // --- INLINE DOODLE PALETTE BAR (Visible while drawing on note) ---
-            AnimatedVisibility(visible = isViewingMyNote && isDoodlingOnNote) {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
-                    modifier = Modifier.fillMaxWidth()
+        // --- INLINE DOODLE PALETTE + BRUSH SIZE SLIDER + ERASER BAR (Visible while drawing on note) ---
+        AnimatedVisibility(visible = isViewingMyNote && isDoodlingOnNote) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(7.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             doodlePenPalette.forEach { colorHex ->
-                                val isChosen = selectedDoodleColorHex == colorHex
+                                val isChosen = !isNoteEraserMode && selectedDoodleColorHex == colorHex
                                 Box(
                                     modifier = Modifier
-                                        .size(if (isChosen) 24.dp else 20.dp)
+                                        .size(if (isChosen) 24.dp else 19.dp)
                                         .clip(CircleShape)
                                         .background(Color(colorHex))
                                         .border(
@@ -1007,8 +945,32 @@ fun CoupleNoteBoxView(
                                             color = if (isChosen) MaterialTheme.colorScheme.onSurface else Color.White.copy(alpha = 0.7f),
                                             shape = CircleShape
                                         )
-                                        .clickable { selectedDoodleColorHex = colorHex }
+                                        .clickable {
+                                            selectedDoodleColorHex = colorHex
+                                            isNoteEraserMode = false
+                                        }
                                 )
+                            }
+
+                            // Eraser Toggle Button for Note Doodle
+                            Surface(
+                                shape = CircleShape,
+                                color = if (isNoteEraserMode) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surface,
+                                border = if (isNoteEraserMode) BorderStroke(1.5.dp, MaterialTheme.colorScheme.error) else null,
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .clickable { isNoteEraserMode = !isNoteEraserMode }
+                                    .testTag("note_doodle_eraser_button")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.CleaningServices,
+                                        contentDescription = "Note Eraser",
+                                        tint = if (isNoteEraserMode) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
                             }
                         }
 
@@ -1045,7 +1007,10 @@ fun CoupleNoteBoxView(
                                 color = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(50))
-                                    .clickable { isDoodlingOnNote = false }
+                                    .clickable {
+                                        isDoodlingOnNote = false
+                                        isNoteEraserMode = false
+                                    }
                             ) {
                                 Text(
                                     text = "Done",
@@ -1057,8 +1022,46 @@ fun CoupleNoteBoxView(
                             }
                         }
                     }
+
+                    // Controllable Brush / Eraser Size Slider Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = if (isNoteEraserMode) "Eraser Size" else "Brush Size",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Slider(
+                            value = selectedDoodleStrokeWidth,
+                            onValueChange = { selectedDoodleStrokeWidth = it },
+                            valueRange = 1.5f..28f,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(28.dp)
+                                .testTag("note_doodle_size_slider")
+                        )
+                        Box(
+                            modifier = Modifier.size(28.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(selectedDoodleStrokeWidth.coerceIn(3f, 24f).dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isNoteEraserMode) MaterialTheme.colorScheme.error
+                                        else Color(selectedDoodleColorHex)
+                                    )
+                            )
+                        }
+                    }
                 }
             }
+        }
 
         // --- MINIMAL ICON-ONLY ACTION BAR ---
         if (isViewingMyNote) {
@@ -1187,7 +1190,7 @@ fun CoupleNoteBoxView(
         }
     }
 
-    // Add or Edit Sticky Note Dialog
+    // Add or Edit Frameless Note Text Dialog
     if (showAddTextDialog) {
         val isEditing = editingTextBoxId != null
         AlertDialog(
@@ -1195,7 +1198,7 @@ fun CoupleNoteBoxView(
                 showAddTextDialog = false
                 editingTextBoxId = null
             },
-            title = { Text(if (isEditing) "Edit Text Box" else "New Text Box") },
+            title = { Text(if (isEditing) "Edit Text" else "Add Text") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
@@ -1205,10 +1208,10 @@ fun CoupleNoteBoxView(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    // Optional background color options
+                    // Text Color options
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = "Background Fill (Optional)",
+                            text = "Text Color",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1217,34 +1220,29 @@ fun CoupleNoteBoxView(
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            stickyPalette.forEach { colorHex ->
-                                val isSelected = selectedNoteColor == colorHex
-                                val isTrans = colorHex == 0x00000000L || colorHex == 0L
+                            textColorPalette.forEach { colorHex ->
+                                val isSelected = selectedTextColor == colorHex
                                 Box(
                                     modifier = Modifier
                                         .size(28.dp)
                                         .clip(CircleShape)
-                                        .background(if (isTrans) Color.Transparent else Color(colorHex))
+                                        .background(Color(colorHex))
                                         .border(
                                             width = if (isSelected) 2.5.dp else 1.dp,
                                             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
                                             shape = CircleShape
                                         )
-                                        .clickable { selectedNoteColor = colorHex },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (isTrans) {
-                                        Text(
-                                            text = "Ø",
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                    }
-                                }
+                                        .clickable { selectedTextColor = colorHex }
+                                )
                             }
                         }
                     }
+
+                    Text(
+                        text = "Tip: Pinch with 2 fingers to resize or rotate freely. Drag outside the note to delete.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             },
             confirmButton = {
@@ -1256,7 +1254,7 @@ fun CoupleNoteBoxView(
                             if (editId != null) {
                                 val updated = myNote.copy(
                                     textItems = myNote.textItems.map {
-                                        if (it.id == editId) it.copy(text = text, colorArgb = selectedNoteColor) else it
+                                        if (it.id == editId) it.copy(text = text, colorArgb = 0L, textColorArgb = selectedTextColor) else it
                                     },
                                     lastUpdatedAtMs = System.currentTimeMillis()
                                 )
@@ -1266,12 +1264,14 @@ fun CoupleNoteBoxView(
                                 val newBox = CoupleNoteTextBox(
                                     id = UUID.randomUUID().toString(),
                                     text = text,
-                                    xOffsetDp = 18f + (myNote.textItems.size * 26f) % 140f,
-                                    yOffsetDp = 18f + (myNote.textItems.size * 24f) % 100f,
-                                    widthDp = 144f,
+                                    xOffsetDp = 28f + (myNote.textItems.size * 26f) % 140f,
+                                    yOffsetDp = 28f + (myNote.textItems.size * 24f) % 100f,
+                                    widthDp = 160f,
                                     heightDp = 76f,
-                                    fontSizeSp = 13.5f,
-                                    colorArgb = selectedNoteColor
+                                    fontSizeSp = 18f,
+                                    colorArgb = 0L,
+                                    textColorArgb = selectedTextColor,
+                                    rotationDeg = 0f
                                 )
                                 val updated = myNote.copy(
                                     textItems = myNote.textItems + newBox,
@@ -1286,7 +1286,7 @@ fun CoupleNoteBoxView(
                         editingTextBoxId = null
                     }
                 ) {
-                    Text(if (isEditing) "Save Note" else "Pin to Board")
+                    Text(if (isEditing) "Save" else "Add")
                 }
             },
             dismissButton = {

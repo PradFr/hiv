@@ -36,6 +36,7 @@ enum class CallMode {
 data class ActiveCallSession(
     val mode: CallMode,
     val callerSlot: TestUserSlot,
+    val callSessionId: Long = System.currentTimeMillis(),
     val isConnected: Boolean = false,
     val isMuted: Boolean = false,
     val isSpeakerOn: Boolean = false,
@@ -98,7 +99,29 @@ class DuoSpaceViewModel(
             initialValue = emptyList()
         )
 
+    private var lastHandledRemoteCallSessionId: Long = 0L
+    private var locallyEndedCallSessionId: Long = 0L
+
     init {
+        com.example.data.remote.HiveLivePeerRelay.onRemoteCallSignalChanged = { signal ->
+            handleRemoteCallSignal(signal)
+        }
+        HiveNotificationHelper.onCallNotificationAction = { action, sessionId ->
+            when (action) {
+                HiveNotificationHelper.ACTION_ANSWER_CALL -> {
+                    val cur = _uiState.value.activeCall
+                    if (cur != null && !cur.isConnected) {
+                        answerCall()
+                    }
+                }
+                HiveNotificationHelper.ACTION_DECLINE_CALL -> {
+                    if (sessionId > 0L) {
+                        locallyEndedCallSessionId = sessionId
+                    }
+                    _uiState.update { it.copy(activeCall = null) }
+                }
+            }
+        }
         viewModelScope.launch {
             val code = _activeSpaceCode.value
             val creator = if (initialUserSlot == TestUserSlot.USER_1) initialUserName else "Partner"
@@ -108,9 +131,160 @@ class DuoSpaceViewModel(
                 creatorName = creator,
                 partnerName = partner
             )
-            repository.markAllReadForUser(_uiState.value.activeUser.userId, code)
         }
         startBackgroundSync(_activeSpaceCode.value)
+    }
+
+    fun handleIncomingCallIntent(
+        action: String,
+        sessionId: Long,
+        callerSlotRaw: String,
+        callModeRaw: String
+    ) {
+        if (sessionId <= 0L || sessionId == locallyEndedCallSessionId) return
+        val callerSlot = if (callerSlotRaw == TestUserSlot.USER_2.name) {
+            TestUserSlot.USER_2
+        } else if (callerSlotRaw == TestUserSlot.USER_1.name) {
+            TestUserSlot.USER_1
+        } else {
+            if (_uiState.value.activeUser == TestUserSlot.USER_1) TestUserSlot.USER_2 else TestUserSlot.USER_1
+        }
+        val mode = if (callModeRaw.equals(CallMode.VIDEO.name, ignoreCase = true)) {
+            CallMode.VIDEO
+        } else {
+            CallMode.VOICE
+        }
+        val autoRec = spaceState.value?.autoRecordCalls == true
+        lastHandledRemoteCallSessionId = sessionId
+
+        if (_uiState.value.activeCall == null || _uiState.value.activeCall?.callSessionId != sessionId) {
+            _uiState.update {
+                it.copy(
+                    activeCall = ActiveCallSession(
+                        mode = mode,
+                        callerSlot = callerSlot,
+                        callSessionId = sessionId,
+                        isConnected = false,
+                        isVideoEnabled = mode == CallMode.VIDEO,
+                        isFrontCamera = true,
+                        isRecording = autoRec,
+                        wasEverRecorded = autoRec,
+                        startedAtMs = System.currentTimeMillis()
+                    ),
+                    isStickerTrayOpen = false,
+                    isDoodleModeActive = false
+                )
+            }
+        }
+
+        if (action == HiveNotificationHelper.ACTION_ANSWER_CALL) {
+            answerCall()
+        }
+    }
+
+    private fun handleRemoteCallSignal(signal: com.example.data.remote.PeerRealtimeSignal) {
+        val now = System.currentTimeMillis()
+        val currentCall = _uiState.value.activeCall
+        val callerSlot = if (signal.callerSlot == TestUserSlot.USER_2.name) {
+            TestUserSlot.USER_2
+        } else {
+            TestUserSlot.USER_1
+        }
+        val mode = if (signal.callMode == CallMode.VIDEO.name) CallMode.VIDEO else CallMode.VOICE
+
+        when (signal.callState) {
+            "RINGING" -> {
+                if (!signal.isFresh || signal.callSessionId <= 0L) return
+                if (signal.callSessionId == locallyEndedCallSessionId) return
+                // Only open an incoming ringing call when the OTHER user is the caller
+                if (callerSlot == _uiState.value.activeUser) return
+
+                if (currentCall == null || (currentCall.callSessionId != signal.callSessionId && !currentCall.isConnected)) {
+                    lastHandledRemoteCallSessionId = signal.callSessionId
+                    val autoRec = spaceState.value?.autoRecordCalls == true
+                    _uiState.update {
+                        it.copy(
+                            activeCall = ActiveCallSession(
+                                mode = mode,
+                                callerSlot = callerSlot,
+                                callSessionId = signal.callSessionId,
+                                isConnected = false,
+                                isVideoEnabled = mode == CallMode.VIDEO,
+                                isFrontCamera = true,
+                                isRecording = autoRec,
+                                wasEverRecorded = autoRec,
+                                startedAtMs = now
+                            ),
+                            isStickerTrayOpen = false,
+                            isDoodleModeActive = false
+                        )
+                    }
+                    com.example.data.remote.HiveLivePeerRelay.acknowledgeIncomingCallRinging(
+                        mode = mode,
+                        callerSlot = callerSlot.name,
+                        sessionId = signal.callSessionId
+                    )
+                }
+            }
+            "CONNECTED" -> {
+                if (!signal.isFresh || signal.callSessionId <= 0L) return
+                if (signal.callSessionId == locallyEndedCallSessionId) return
+
+                if (currentCall == null) {
+                    lastHandledRemoteCallSessionId = signal.callSessionId
+                    val autoRec = spaceState.value?.autoRecordCalls == true
+                    _uiState.update {
+                        it.copy(
+                            activeCall = ActiveCallSession(
+                                mode = mode,
+                                callerSlot = callerSlot,
+                                callSessionId = signal.callSessionId,
+                                isConnected = true,
+                                isVideoEnabled = mode == CallMode.VIDEO,
+                                isFrontCamera = true,
+                                isRecording = autoRec,
+                                wasEverRecorded = autoRec,
+                                startedAtMs = now
+                            ),
+                            isStickerTrayOpen = false,
+                            isDoodleModeActive = false
+                        )
+                    }
+                    com.example.data.remote.HiveLivePeerRelay.publishCallConnected(
+                        mode = mode,
+                        callerSlot = callerSlot.name,
+                        sessionId = signal.callSessionId
+                    )
+                } else if (!currentCall.isConnected && currentCall.callSessionId == signal.callSessionId) {
+                    _uiState.update { state ->
+                        val cur = state.activeCall ?: return@update state
+                        state.copy(
+                            activeCall = cur.copy(
+                                isConnected = true,
+                                startedAtMs = now
+                            )
+                        )
+                    }
+                    com.example.data.remote.HiveLivePeerRelay.publishCallConnected(
+                        mode = currentCall.mode,
+                        callerSlot = currentCall.callerSlot.name,
+                        sessionId = signal.callSessionId
+                    )
+                }
+            }
+            "ENDED" -> {
+                // Strictly verify that ENDED matches the active call's callSessionId so stale ENDED states
+                // from previous calls can NEVER cut a newly started call!
+                if (currentCall != null &&
+                    signal.callSessionId > 0L &&
+                    signal.callSessionId == currentCall.callSessionId
+                ) {
+                    locallyEndedCallSessionId = currentCall.callSessionId
+                    _uiState.update { it.copy(activeCall = null) }
+                    com.example.data.remote.HiveLivePeerRelay.publishCallEnded(currentCall.callSessionId)
+                }
+            }
+        }
     }
 
     private fun startBackgroundSync(spaceCode: String) {
@@ -153,7 +327,6 @@ class DuoSpaceViewModel(
             if (displayName.isNotBlank()) {
                 repository.updateMemberNameInSpace(cleanCode, slot.userId, displayName)
             }
-            repository.markAllReadForUser(slot.userId, cleanCode)
         }
         if (codeChanged) {
             startBackgroundSync(cleanCode)
@@ -187,17 +360,17 @@ class DuoSpaceViewModel(
         onComplete: (SpaceEntity) -> Unit = {}
     ) {
         val cleanCode = spaceCode.trim().uppercase().ifBlank { DuoSpaceRepository.DEFAULT_SPACE_CODE }
+        val joinerSlot = TestUserSlot.USER_2
         _activeSpaceCode.value = cleanCode
         _uiState.update {
             it.copy(
-                activeUser = TestUserSlot.USER_2,
+                activeUser = joinerSlot,
                 activeSpaceCode = cleanCode,
                 replyingTo = null
             )
         }
         viewModelScope.launch {
             val space = repository.joinExistingSpace(cleanCode, partnerName)
-            repository.markAllReadForUser(TestUserSlot.USER_2.userId, cleanCode)
             startBackgroundSync(cleanCode)
             onComplete(space)
         }
@@ -219,7 +392,6 @@ class DuoSpaceViewModel(
             if (target == TestUserSlot.USER_2 && currentSpace != null && currentSpace.partnerId == null) {
                 repository.joinExistingSpace(code, currentSpace.partnerName ?: "Partner")
             }
-            repository.markAllReadForUser(target.userId, code)
         }
     }
 
@@ -440,28 +612,42 @@ class DuoSpaceViewModel(
     fun startCall(mode: CallMode = CallMode.VOICE) {
         val caller = _uiState.value.activeUser
         val autoRec = spaceState.value?.autoRecordCalls == true
+        val sessionId = System.currentTimeMillis()
+        lastHandledRemoteCallSessionId = sessionId
         _uiState.update {
             it.copy(
                 activeCall = ActiveCallSession(
                     mode = mode,
                     callerSlot = caller,
+                    callSessionId = sessionId,
                     isConnected = false,
                     isVideoEnabled = mode == CallMode.VIDEO,
                     isFrontCamera = true,
                     isRecording = autoRec,
                     wasEverRecorded = autoRec,
-                    startedAtMs = System.currentTimeMillis()
+                    startedAtMs = sessionId
                 ),
                 isStickerTrayOpen = false,
                 isDoodleModeActive = false
             )
         }
+        com.example.data.remote.HiveLivePeerRelay.publishCallStart(
+            mode = mode,
+            callerSlot = caller,
+            sessionId = sessionId
+        )
     }
 
     fun answerCall() {
         val autoRec = spaceState.value?.autoRecordCalls == true
+        var answeredMode = CallMode.VOICE
+        var answeredCaller = _uiState.value.activeUser.name
+        var answeredSessionId = lastHandledRemoteCallSessionId
         _uiState.update { state ->
             val current = state.activeCall ?: return@update state
+            answeredMode = current.mode
+            answeredCaller = current.callerSlot.name
+            answeredSessionId = current.callSessionId
             val recActive = current.isRecording || autoRec
             state.copy(
                 activeCall = current.copy(
@@ -472,50 +658,77 @@ class DuoSpaceViewModel(
                 )
             )
         }
+        com.example.data.remote.HiveLivePeerRelay.publishCallAnswered(
+            mode = answeredMode,
+            callerSlot = answeredCaller,
+            sessionId = answeredSessionId
+        )
     }
 
     fun toggleCallMute() {
+        var nextMuted = false
         _uiState.update { state ->
             val current = state.activeCall ?: return@update state
-            state.copy(activeCall = current.copy(isMuted = !current.isMuted))
+            nextMuted = !current.isMuted
+            state.copy(activeCall = current.copy(isMuted = nextMuted))
         }
+        com.example.data.remote.HiveLivePeerRelay.setCallMuted(nextMuted)
     }
 
     fun toggleCallSpeaker() {
+        var nextSpeaker = false
         _uiState.update { state ->
             val current = state.activeCall ?: return@update state
-            state.copy(activeCall = current.copy(isSpeakerOn = !current.isSpeakerOn))
+            nextSpeaker = !current.isSpeakerOn
+            state.copy(activeCall = current.copy(isSpeakerOn = nextSpeaker))
         }
+        com.example.data.remote.HiveLivePeerRelay.setCallSpeakerOn(nextSpeaker)
     }
 
     fun toggleCallVideo() {
+        var nextVideo = false
+        var frontCam = true
         _uiState.update { state ->
             val current = state.activeCall ?: return@update state
-            val nextVideo = !current.isVideoEnabled
+            nextVideo = !current.isVideoEnabled
+            frontCam = current.isFrontCamera
             state.copy(
                 activeCall = current.copy(
                     isVideoEnabled = nextVideo,
-                    mode = if (nextVideo) CallMode.VIDEO else CallMode.VOICE
+                    mode = if (nextVideo || current.isScreenSharing) CallMode.VIDEO else CallMode.VOICE
                 )
             )
         }
+        com.example.data.remote.HiveLivePeerRelay.setCallVideoState(
+            isVideoOn = nextVideo,
+            isFrontCamera = frontCam
+        )
     }
 
     fun flipCallCamera() {
+        var isVid = false
+        var nextFront = true
         _uiState.update { state ->
             val current = state.activeCall ?: return@update state
+            isVid = current.isVideoEnabled
+            nextFront = !current.isFrontCamera
             state.copy(
                 activeCall = current.copy(
-                    isFrontCamera = !current.isFrontCamera
+                    isFrontCamera = nextFront
                 )
             )
         }
+        com.example.data.remote.HiveLivePeerRelay.setCallVideoState(
+            isVideoOn = isVid,
+            isFrontCamera = nextFront
+        )
     }
 
     fun toggleCallScreenShare(label: String = "Phone Screen") {
+        var nextSharing = false
         _uiState.update { state ->
             val current = state.activeCall ?: return@update state
-            val nextSharing = !current.isScreenSharing
+            nextSharing = !current.isScreenSharing
             state.copy(
                 activeCall = current.copy(
                     isScreenSharing = nextSharing,
@@ -524,6 +737,10 @@ class DuoSpaceViewModel(
                 )
             )
         }
+        com.example.data.remote.HiveLivePeerRelay.setCallScreenShareState(
+            isScreenSharing = nextSharing,
+            label = label
+        )
     }
 
     fun toggleCallRecording() {
@@ -545,7 +762,9 @@ class DuoSpaceViewModel(
         recordingWaveformCsv: String? = null
     ) {
         val current = _uiState.value.activeCall ?: return
+        locallyEndedCallSessionId = current.callSessionId
         _uiState.update { it.copy(activeCall = null) }
+        com.example.data.remote.HiveLivePeerRelay.publishCallEnded(current.callSessionId)
 
         val space = spaceState.value
         val code = _activeSpaceCode.value

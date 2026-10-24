@@ -7,7 +7,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas as AndroidCanvas
 import android.media.AudioManager
 import android.media.projection.MediaProjectionManager
 import android.view.ViewGroup
@@ -15,6 +17,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.platform.LocalView
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -630,27 +634,45 @@ fun MessageReceiptTicks(
     onMediaOverlay: Boolean = false,
     modifier: Modifier = Modifier
 ) {
+    val readColor = Color(0xFF10B981) // Vibrant Emerald Green Read Indicator
+    val deliveredColor = if (onMediaOverlay) Color.White.copy(alpha = 0.85f) else Color(0xFF94A3B8)
+    val sentColor = if (onMediaOverlay) Color.White.copy(alpha = 0.55f) else Color(0xFF64748B)
+
     val tickColor = when {
-        isRead -> if (onMediaOverlay) Color(0xFF60A5FA) else MaterialTheme.colorScheme.onPrimary
-        isDelivered -> if (onMediaOverlay) Color.White.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f)
-        else -> if (onMediaOverlay) Color.White.copy(alpha = 0.5f) else MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.45f)
+        isRead -> readColor
+        isDelivered -> deliveredColor
+        else -> sentColor
     }
 
     val icon = if (isRead || isDelivered) Icons.Default.DoneAll else Icons.Default.Done
     val tag = if (isRead) "message_tick_read" else if (isDelivered) "message_tick_delivered" else "message_tick_sent"
 
-    Icon(
-        imageVector = icon,
-        contentDescription = when {
-            isRead -> "Read"
-            isDelivered -> "Delivered"
-            else -> "Sent"
-        },
-        tint = tickColor,
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
         modifier = modifier
-            .size(13.dp)
-            .testTag(tag)
-    )
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = when {
+                isRead -> "Read"
+                isDelivered -> "Delivered"
+                else -> "Sent"
+            },
+            tint = tickColor,
+            modifier = Modifier
+                .size(13.dp)
+                .testTag(tag)
+        )
+        if (isRead) {
+            Box(
+                modifier = Modifier
+                    .size(4.dp)
+                    .clip(CircleShape)
+                    .background(readColor)
+            )
+        }
+    }
 }
 
 @Composable
@@ -841,12 +863,11 @@ fun DuoCallOverlay(
     }
 
     // Stage focus state:
-    // - Automatically switches to PARTNER_FULL whenever the user enables Video Call!
+    // - Starts in SPLIT_GRID so your live camera is large and visible right away;
+    //   automatically switches to PARTNER_FULL once partner's live video frame arrives.
     // - Double-tapping any participant block (or Screen Share stage) toggles full-stage focus.
     var stageFocus by remember {
-        mutableStateOf(
-            if (callSession.isVideoEnabled) CallStageFocus.PARTNER_FULL else CallStageFocus.SPLIT_GRID
-        )
+        mutableStateOf(CallStageFocus.SPLIT_GRID)
     }
 
     // Progressive 2-stage swipe-up dock state (COLLAPSED -> QUICK_MENU -> FULL_SETTINGS)
@@ -929,7 +950,14 @@ fun DuoCallOverlay(
         }
     }
 
-    // Automatically default to Partner Full Stage whenever user switches to Video Call
+    val partnerSignal by com.example.data.remote.HiveLivePeerRelay.partnerSignal.collectAsState()
+    val partnerVideoBitmap by com.example.data.remote.HiveLivePeerRelay.partnerVideoBitmap.collectAsState()
+    val isPartnerVideoOn = partnerSignal.isFresh &&
+        (partnerSignal.isPartnerVideoOn || (partnerSignal.videoMode == "CAM" && partnerVideoBitmap != null))
+    val isPartnerScreenSharing = partnerSignal.isFresh &&
+        (partnerSignal.isPartnerScreenSharing || (partnerSignal.videoMode == "SCREEN" && partnerVideoBitmap != null))
+    val anyScreenSharing = callSession.isScreenSharing || isPartnerScreenSharing
+
     var hasCallCameraPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
@@ -940,6 +968,18 @@ fun DuoCallOverlay(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         hasCallCameraPermission = granted
+        if (granted && !callSession.isVideoEnabled) {
+            onToggleVideo()
+        }
+    }
+
+    val handleToggleVideo: () -> Unit = {
+        val permGrantedNow = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        hasCallCameraPermission = permGrantedNow
+        onToggleVideo()
     }
 
     val bluetoothConnectPermissionLauncher = rememberLauncherForActivityResult(
@@ -960,39 +1000,215 @@ fun DuoCallOverlay(
         }
     }
 
-    LaunchedEffect(callSession.isVideoEnabled) {
+    LaunchedEffect(callSession.isVideoEnabled, callSession.isFrontCamera) {
+        com.example.data.remote.HiveLivePeerRelay.setCallVideoState(
+            isVideoOn = callSession.isVideoEnabled,
+            isFrontCamera = callSession.isFrontCamera
+        )
         if (callSession.isVideoEnabled) {
-            if (!hasCallCameraPermission) {
+            val permNow = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+            hasCallCameraPermission = permNow
+            if (!permNow) {
                 try {
                     callCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                 } catch (_: Exception) {
                 }
             }
-            if (!callSession.isScreenSharing) {
-                stageFocus = CallStageFocus.PARTNER_FULL
+            if (!anyScreenSharing) {
+                stageFocus = if (isPartnerVideoOn && partnerVideoBitmap != null) {
+                    CallStageFocus.PARTNER_FULL
+                } else {
+                    CallStageFocus.SPLIT_GRID
+                }
             }
+        }
+    }
+
+    LaunchedEffect(isPartnerVideoOn, partnerVideoBitmap != null) {
+        if (isPartnerVideoOn && partnerVideoBitmap != null && !anyScreenSharing && stageFocus == CallStageFocus.SPLIT_GRID && callSession.isVideoEnabled) {
+            stageFocus = CallStageFocus.PARTNER_FULL
         }
     }
 
     // If screen sharing ends while in SCREEN_SHARE_FULL, return to appropriate stage
-    LaunchedEffect(callSession.isScreenSharing) {
-        if (!callSession.isScreenSharing && stageFocus == CallStageFocus.SCREEN_SHARE_FULL) {
-            stageFocus = if (callSession.isVideoEnabled) {
-                CallStageFocus.PARTNER_FULL
-            } else {
-                CallStageFocus.SPLIT_GRID
-            }
+    LaunchedEffect(anyScreenSharing) {
+        if (!anyScreenSharing && stageFocus == CallStageFocus.SCREEN_SHARE_FULL) {
+            stageFocus = CallStageFocus.SPLIT_GRID
         }
     }
 
-    // Interactive laser pointer offset on the shared screen stage
+    // Interactive laser pointer offset + live drawing points on the shared screen stage
     var pointerNormalized by remember { mutableStateOf(Offset(0.5f, 0.45f)) }
+    var sharedCanvasTrail by remember { mutableStateOf<List<Offset>>(emptyList()) }
+    var localScreenPreviewBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var lastAppWindowBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    val localRootView = LocalView.current
 
-    // Android MediaProjection screen capture intent launcher (gracefully falls back in emulator)
+    // Live Screen Share Frame Capture & Relay Loop (continues even when call is minimized to top bar!)
+    LaunchedEffect(callSession.isScreenSharing, selectedShareSource, minimizeMode) {
+        com.example.data.remote.HiveLivePeerRelay.setCallScreenShareState(
+            isScreenSharing = callSession.isScreenSharing,
+            label = selectedShareSource,
+            pointerX = pointerNormalized.x,
+            pointerY = pointerNormalized.y
+        )
+        if (callSession.isScreenSharing) {
+            var frameTick = 0
+            while (isActive && callSession.isScreenSharing) {
+                frameTick += 1
+                runCatching {
+                    val root = (context as? Activity)?.window?.decorView?.rootView ?: localRootView.rootView
+                    val rw = root.width.coerceAtLeast(270)
+                    val rh = root.height.coerceAtLeast(420)
+                    val outW = 270
+                    val outH = ((outW.toFloat() * rh.toFloat()) / rw.toFloat()).toInt().coerceIn(200, 520)
+                    val bmp = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+                    val canvas = AndroidCanvas(bmp)
+
+                    if (minimizeMode != CallMinimizeMode.NONE && root.width > 10 && root.height > 10) {
+                        // User minimized the call to browse the app live: capture live app window directly!
+                        val sx = outW.toFloat() / root.width.toFloat()
+                        val sy = outH.toFloat() / root.height.toFloat()
+                        canvas.save()
+                        canvas.scale(sx, sy)
+                        root.draw(canvas)
+                        canvas.restore()
+                        lastAppWindowBitmap = bmp.copy(Bitmap.Config.ARGB_8888, false)
+                    } else if (lastAppWindowBitmap != null && selectedShareSource != "DuoSpace Canvas") {
+                        // Draw latest captured app window frame as base when back in Call overlay
+                        val prev = lastAppWindowBitmap!!
+                        val srcRect = android.graphics.Rect(0, 0, prev.width, prev.height)
+                        val dstRect = android.graphics.Rect(0, 0, outW, outH)
+                        canvas.drawBitmap(prev, srcRect, dstRect, null)
+                    } else {
+                        // Render live interactive workspace canvas frame
+                        val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                            color = android.graphics.Color.rgb(22, 25, 34)
+                            style = android.graphics.Paint.Style.FILL
+                        }
+                        canvas.drawRect(0f, 0f, outW.toFloat(), outH.toFloat(), bgPaint)
+
+                        val cardPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                            color = android.graphics.Color.rgb(35, 39, 52)
+                            style = android.graphics.Paint.Style.FILL
+                        }
+                        val pad = 16f
+                        canvas.drawRoundRect(
+                            pad,
+                            pad,
+                            outW - pad,
+                            outH - pad,
+                            20f,
+                            20f,
+                            cardPaint
+                        )
+
+                        val headerPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                            color = android.graphics.Color.rgb(48, 54, 72)
+                        }
+                        canvas.drawRoundRect(
+                            pad + 12f,
+                            pad + 12f,
+                            outW - pad - 12f,
+                            pad + 44f,
+                            10f,
+                            10f,
+                            headerPaint
+                        )
+
+                        val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                            color = android.graphics.Color.WHITE
+                            textSize = 11.5f
+                            isFakeBoldText = true
+                        }
+                        canvas.drawText(
+                            "LIVE • $selectedShareSource",
+                            pad + 22f,
+                            pad + 32f,
+                            textPaint
+                        )
+
+                        val pulseShift = (kotlin.math.sin(frameTick * 0.45) * 8.0).toFloat()
+                        val accentPaint1 = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                            color = android.graphics.Color.argb(115, 88, 101, 242)
+                        }
+                        canvas.drawRoundRect(
+                            pad + 16f,
+                            pad + 60f + pulseShift,
+                            outW * 0.68f,
+                            pad + 96f + pulseShift,
+                            12f,
+                            12f,
+                            accentPaint1
+                        )
+
+                        val accentPaint2 = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                            color = android.graphics.Color.argb(105, 35, 165, 90)
+                        }
+                        canvas.drawRoundRect(
+                            outW * 0.30f,
+                            pad + 112f - pulseShift * 0.6f,
+                            outW - pad - 16f,
+                            pad + 150f - pulseShift * 0.6f,
+                            12f,
+                            12f,
+                            accentPaint2
+                        )
+
+                        val subTextPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                            color = android.graphics.Color.argb(190, 220, 225, 240)
+                            textSize = 10f
+                        }
+                        canvas.drawText(
+                            "Drag here to draw & point live • Tap 'Browse App Live' to stream app",
+                            pad + 16f,
+                            outH - pad - 16f,
+                            subTextPaint
+                        )
+                    }
+
+                    // Draw interactive laser pointer & trail onto transmitted screen frame
+                    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                        color = android.graphics.Color.argb(230, 88, 101, 242)
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 4.5f
+                        strokeCap = android.graphics.Paint.Cap.ROUND
+                    }
+                    for (i in 1 until sharedCanvasTrail.size) {
+                        val p0 = sharedCanvasTrail[i - 1]
+                        val p1 = sharedCanvasTrail[i]
+                        canvas.drawLine(p0.x * outW, p0.y * outH, p1.x * outW, p1.y * outH, paint)
+                    }
+                    val px = pointerNormalized.x * outW
+                    val py = pointerNormalized.y * outH
+                    paint.style = android.graphics.Paint.Style.FILL
+                    paint.color = android.graphics.Color.argb(110, 88, 101, 242)
+                    canvas.drawCircle(px, py, 14f, paint)
+                    paint.color = android.graphics.Color.WHITE
+                    canvas.drawCircle(px, py, 5f, paint)
+
+                    localScreenPreviewBitmap = bmp
+                    com.example.data.remote.HiveLivePeerRelay.updateScreenSharePointer(
+                        pointerNormalized.x,
+                        pointerNormalized.y
+                    )
+                    com.example.data.remote.HiveLivePeerRelay.submitLocalVideoBitmap(bmp, mode = "SCREEN")
+                }
+                delay(360L)
+            }
+        } else {
+            localScreenPreviewBitmap = null
+        }
+    }
+
+    // Optional Android MediaProjection screen capture intent launcher
     val screenShareLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK || result.resultCode == Activity.RESULT_CANCELED) {
+    ) { _ ->
+        if (!callSession.isScreenSharing) {
             onToggleScreenShare(selectedShareSource)
         }
     }
@@ -1037,11 +1253,55 @@ fun DuoCallOverlay(
         }
     }
 
-    LaunchedEffect(callSession.isConnected) {
-        if (!callSession.isConnected) {
-            delay(2200L)
-            onAnswerCall()
+    val isIncomingRinging = !callSession.isConnected && callSession.callerSlot != activeUser
+
+    val micPermLauncherForCall = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    LaunchedEffect(callSession.isConnected, isIncomingRinging) {
+        if (isIncomingRinging) {
+            HiveNotificationHelper.startIncomingCallRingAndVibration(context)
         } else {
+            HiveNotificationHelper.cancelIncomingCallNotification(context)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            HiveNotificationHelper.stopIncomingCallRingAndVibration(context)
+        }
+    }
+
+    LaunchedEffect(callSession.isConnected, callSession.callSessionId) {
+        if (!callSession.isConnected) {
+            elapsedSec = 0
+            val hasMic = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!hasMic && callSession.callerSlot == activeUser) {
+                runCatching {
+                    micPermLauncherForCall.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            }
+            // Wait up to 45 seconds for partner to answer before timing out an unanswered call
+            delay(45_000L)
+            if (!callSession.isConnected) {
+                HiveNotificationHelper.cancelIncomingCallNotification(context)
+                onEndCall(0, null, null)
+            }
+        } else {
+            HiveNotificationHelper.cancelIncomingCallNotification(context)
+            val hasMic = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!hasMic) {
+                runCatching {
+                    micPermLauncherForCall.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            }
             val startMs = System.currentTimeMillis()
             while (isActive) {
                 elapsedSec = ((System.currentTimeMillis() - startMs) / 1000L).toInt()
@@ -1090,6 +1350,7 @@ fun DuoCallOverlay(
         }
 
     val handleEndCall = {
+        HiveNotificationHelper.cancelIncomingCallNotification(context)
         if (isRecorderRunning) {
             val saved = callRecorder.stopRecording(cancel = false)
             isRecorderRunning = false
@@ -1112,6 +1373,42 @@ fun DuoCallOverlay(
         onEndCall(elapsedSec, null, null)
     }
 
+    // Dedicated Full-Screen Incoming Call Interface with Answer & Decline when receiving a call
+    if (isIncomingRinging) {
+        val cfg = remember(context, HiveSettingsPersistence.changeCounter) {
+            HiveSettingsPersistence.loadConfig(context)
+        }
+        val callerAvatarBlob = if (callSession.callerSlot == TestUserSlot.USER_1) {
+            cfg.user1AvatarBlob
+        } else {
+            cfg.user2AvatarBlob
+        }
+        HiveIncomingCallOverlay(
+            callerName = partnerName,
+            callerAvatarBlob = callerAvatarBlob,
+            callMode = callSession.mode,
+            pulseFraction = voiceWavePhase,
+            onAnswer = {
+                HiveNotificationHelper.cancelIncomingCallNotification(context)
+                val hasMic = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
+                if (!hasMic) {
+                    runCatching {
+                        micPermLauncherForCall.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }
+                onAnswerCall()
+            },
+            onDecline = {
+                HiveNotificationHelper.cancelIncomingCallNotification(context)
+                handleEndCall()
+            }
+        )
+        return
+    }
+
     // Show ONLY the top swipe-down bar (if Chat icon was clicked) OR ONLY the floating box (if mobile Back was pressed)
     if (minimizeMode != CallMinimizeMode.NONE) {
         MinimizedDiscordCallOverlay(
@@ -1132,26 +1429,19 @@ fun DuoCallOverlay(
     }
 
     val triggerScreenShare = {
-        if (callSession.isScreenSharing) {
-            onToggleScreenShare(selectedShareSource)
-        } else {
-            val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
-            if (mgr != null) {
-                try {
-                    screenShareLauncher.launch(mgr.createScreenCaptureIntent())
-                } catch (_: Exception) {
-                    onToggleScreenShare(selectedShareSource)
-                }
-            } else {
-                onToggleScreenShare(selectedShareSource)
-            }
-        }
+        onToggleScreenShare(selectedShareSource)
     }
 
     Surface(
         color = DiscordBgDark,
         modifier = Modifier
             .fillMaxSize()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) {
+                isCallUiControlsVisible = !isCallUiControlsVisible
+            }
             .testTag("active_call_overlay")
     ) {
         Column(
@@ -1209,8 +1499,8 @@ fun DuoCallOverlay(
                             }
                         }
 
-                        // Discord LIVE Pill when Screen Sharing
-                        if (callSession.isScreenSharing) {
+                        // Discord LIVE Pill when Screen Sharing (self or partner)
+                        if (anyScreenSharing) {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
                                 color = DiscordRed
@@ -1257,7 +1547,6 @@ fun DuoCallOverlay(
                     // Top-Right Action Icons:
                     // 1) Audio Output Selector (defaults to Bluetooth / Headset)
                     // 2) Open Chat (minimizes call to floating box + top swipe-down banner)
-                    // 3) Perspective Switcher
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1349,12 +1638,18 @@ fun DuoCallOverlay(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    if (callSession.isScreenSharing &&
+                    if (anyScreenSharing &&
                         stageFocus != CallStageFocus.PARTNER_FULL &&
                         stageFocus != CallStageFocus.SELF_FULL
                     ) {
-                        // --- DISCORD SCREEN SHARE STAGE (Double-tap stage for 100% Full Screen) ---
+                        // --- DISCORD SCREEN SHARE STAGE (Supports both Local Sharing & Partner Incoming Screen Share!) ---
                         val isShareFull = stageFocus == CallStageFocus.SCREEN_SHARE_FULL
+                        val isSelfSharingNow = callSession.isScreenSharing
+                        val shareHeaderTitle = if (isSelfSharingNow) {
+                            "$activeUserName's Screen • $selectedShareSource"
+                        } else {
+                            "$partnerName's Screen • ${partnerSignal.partnerScreenShareLabel}"
+                        }
                         Surface(
                             shape = RoundedCornerShape(22.dp),
                             color = DiscordTileSurface,
@@ -1367,7 +1662,7 @@ fun DuoCallOverlay(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(22.dp))
                                 .combinedClickable(
-                                    onClick = {},
+                                    onClick = { isCallUiControlsVisible = !isCallUiControlsVisible },
                                     onDoubleClick = {
                                         stageFocus = if (isShareFull) {
                                             CallStageFocus.SPLIT_GRID
@@ -1389,7 +1684,8 @@ fun DuoCallOverlay(
                                 ) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.weight(1f)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.ScreenShare,
@@ -1398,10 +1694,12 @@ fun DuoCallOverlay(
                                             modifier = Modifier.size(16.dp)
                                         )
                                         Text(
-                                            text = "$activeUserName's Screen • $selectedShareSource",
-                                            fontSize = 12.5.sp,
+                                            text = shareHeaderTitle,
+                                            fontSize = 12.sp,
                                             fontWeight = FontWeight.SemiBold,
-                                            color = Color.White
+                                            color = Color.White,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
 
@@ -1409,31 +1707,63 @@ fun DuoCallOverlay(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
-                                        if (isSharingInScreenAudio) {
+                                        if (isSelfSharingNow) {
                                             Surface(
                                                 shape = RoundedCornerShape(6.dp),
-                                                color = DiscordGreen.copy(alpha = 0.22f)
+                                                color = DiscordGreen.copy(alpha = 0.25f),
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .clickable {
+                                                        runCatching {
+                                                            val mpm = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
+                                                            if (mpm != null) {
+                                                                screenShareLauncher.launch(mpm.createScreenCaptureIntent())
+                                                            }
+                                                        }
+                                                    }
+                                                    .testTag("screen_share_os_cast_button")
                                             ) {
                                                 Text(
-                                                    text = "AUDIO SHARED",
+                                                    text = "Cast OS",
                                                     fontSize = 9.5.sp,
                                                     fontWeight = FontWeight.Bold,
                                                     color = DiscordGreen,
                                                     modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
                                                 )
                                             }
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = DiscordBlurple.copy(alpha = 0.28f),
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .clickable {
+                                                        onOpenChatFromCall()
+                                                        minimizeMode = CallMinimizeMode.TOP_SWIPE_BAR
+                                                    }
+                                                    .testTag("screen_share_browse_app_button")
+                                            ) {
+                                                Text(
+                                                    text = "Browse App Live",
+                                                    fontSize = 9.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color.White,
+                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                                )
+                                            }
                                         }
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = Color.White.copy(alpha = 0.1f)
-                                        ) {
-                                            Text(
-                                                text = "1080p 60FPS",
-                                                fontSize = 9.5.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color.White.copy(alpha = 0.9f),
-                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                                            )
+                                        if (isSharingInScreenAudio) {
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = DiscordGreen.copy(alpha = 0.22f)
+                                            ) {
+                                                Text(
+                                                    text = "AUDIO",
+                                                    fontSize = 9.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = DiscordGreen,
+                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                                )
+                                            }
                                         }
                                         Surface(
                                             shape = RoundedCornerShape(6.dp),
@@ -1459,101 +1789,175 @@ fun DuoCallOverlay(
                                                 colors = listOf(Color(0xFF161922), Color(0xFF0D1017))
                                             )
                                         )
-                                        .pointerInput(Unit) {
-                                            detectDragGestures { change, _ ->
-                                                change.consume()
-                                                val nx = (change.position.x / size.width.coerceAtLeast(1)).coerceIn(0.08f, 0.92f)
-                                                val ny = (change.position.y / size.height.coerceAtLeast(1)).coerceIn(0.12f, 0.88f)
-                                                pointerNormalized = Offset(nx, ny)
+                                        .combinedClickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null,
+                                            onClick = {
+                                                isCallUiControlsVisible = !isCallUiControlsVisible
+                                            },
+                                            onDoubleClick = {
+                                                stageFocus = if (isShareFull) {
+                                                    CallStageFocus.SPLIT_GRID
+                                                } else {
+                                                    CallStageFocus.SCREEN_SHARE_FULL
+                                                }
+                                            }
+                                        )
+                                        .pointerInput(isSelfSharingNow) {
+                                            if (isSelfSharingNow) {
+                                                detectDragGestures { change, _ ->
+                                                    change.consume()
+                                                    val nx = (change.position.x / size.width.coerceAtLeast(1)).coerceIn(0.05f, 0.95f)
+                                                    val ny = (change.position.y / size.height.coerceAtLeast(1)).coerceIn(0.05f, 0.95f)
+                                                    val pt = Offset(nx, ny)
+                                                    pointerNormalized = pt
+                                                    sharedCanvasTrail = (sharedCanvasTrail + pt).takeLast(90)
+                                                    com.example.data.remote.HiveLivePeerRelay.updateScreenSharePointer(nx, ny)
+                                                }
                                             }
                                         }
                                 ) {
+                                    // Display Partner's incoming live screen share bitmap OR Local live screen preview
+                                    val displayBitmap = if (!isSelfSharingNow) {
+                                        partnerVideoBitmap
+                                    } else {
+                                        localScreenPreviewBitmap
+                                    }
+
+                                    if (displayBitmap != null) {
+                                        Image(
+                                            bitmap = displayBitmap.asImageBitmap(),
+                                            contentDescription = "Live Shared Screen",
+                                            contentScale = ContentScale.Fit,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+
                                     Canvas(modifier = Modifier.fillMaxSize()) {
                                         val w = size.width
                                         val h = size.height
 
-                                        val frameW = w * 0.78f
-                                        val frameH = h * 0.78f
-                                        val left = (w - frameW) / 2f
-                                        val top = (h - frameH) / 2f
+                                        if (displayBitmap == null) {
+                                            val frameW = w * 0.84f
+                                            val frameH = h * 0.78f
+                                            val left = (w - frameW) / 2f
+                                            val top = (h - frameH) / 2f
 
-                                        drawRoundRect(
-                                            color = Color(0xFF232733),
-                                            topLeft = Offset(left, top),
-                                            size = Size(frameW, frameH),
-                                            cornerRadius = CornerRadius(28f, 28f)
-                                        )
+                                            drawRoundRect(
+                                                color = Color(0xFF232733),
+                                                topLeft = Offset(left, top),
+                                                size = Size(frameW, frameH),
+                                                cornerRadius = CornerRadius(24f, 24f)
+                                            )
 
-                                        drawRoundRect(
-                                            color = Color(0xFF2E3344),
-                                            topLeft = Offset(left + 20f, top + 20f),
-                                            size = Size(frameW - 40f, 36f),
-                                            cornerRadius = CornerRadius(12f, 12f)
-                                        )
+                                            drawRoundRect(
+                                                color = Color(0xFF2E3344),
+                                                topLeft = Offset(left + 18f, top + 18f),
+                                                size = Size(frameW - 36f, 34f),
+                                                cornerRadius = CornerRadius(10f, 10f)
+                                            )
 
-                                        val shift = voiceWavePhase * 12f
-                                        drawRoundRect(
-                                            color = DiscordBlurple.copy(alpha = 0.35f),
-                                            topLeft = Offset(left + 24f, top + 76f + shift),
-                                            size = Size(frameW * 0.55f, 44f),
-                                            cornerRadius = CornerRadius(16f, 16f)
-                                        )
-                                        drawRoundRect(
-                                            color = DiscordGreen.copy(alpha = 0.3f),
-                                            topLeft = Offset(left + frameW * 0.32f, top + 138f - shift * 0.5f),
-                                            size = Size(frameW * 0.58f, 48f),
-                                            cornerRadius = CornerRadius(16f, 16f)
-                                        )
-                                        drawRoundRect(
-                                            color = Color.White.copy(alpha = 0.1f),
-                                            topLeft = Offset(left + 24f, top + 204f),
-                                            size = Size(frameW - 48f, 54f),
-                                            cornerRadius = CornerRadius(16f, 16f)
-                                        )
+                                            val shift = voiceWavePhase * 10f
+                                            drawRoundRect(
+                                                color = DiscordBlurple.copy(alpha = 0.35f),
+                                                topLeft = Offset(left + 22f, top + 68f + shift),
+                                                size = Size(frameW * 0.56f, 40f),
+                                                cornerRadius = CornerRadius(14f, 14f)
+                                            )
+                                            drawRoundRect(
+                                                color = DiscordGreen.copy(alpha = 0.3f),
+                                                topLeft = Offset(left + frameW * 0.32f, top + 124f - shift * 0.5f),
+                                                size = Size(frameW * 0.58f, 44f),
+                                                cornerRadius = CornerRadius(14f, 14f)
+                                            )
+                                        }
 
-                                        val px = w * pointerNormalized.x
-                                        val py = h * pointerNormalized.y
+                                        // Render interactive whiteboard trail
+                                        for (i in 1 until sharedCanvasTrail.size) {
+                                            val p0 = sharedCanvasTrail[i - 1]
+                                            val p1 = sharedCanvasTrail[i]
+                                            drawLine(
+                                                color = DiscordBlurple,
+                                                start = Offset(p0.x * w, p0.y * h),
+                                                end = Offset(p1.x * w, p1.y * h),
+                                                strokeWidth = 6f
+                                            )
+                                        }
+
+                                        val activePtr = if (isSelfSharingNow) {
+                                            pointerNormalized
+                                        } else {
+                                            Offset(partnerSignal.partnerPointerX, partnerSignal.partnerPointerY)
+                                        }
+                                        val px = w * activePtr.x
+                                        val py = h * activePtr.y
                                         drawCircle(
-                                            color = DiscordBlurple.copy(alpha = 0.32f),
-                                            radius = 26f,
+                                            color = DiscordBlurple.copy(alpha = 0.35f),
+                                            radius = 24f,
                                             center = Offset(px, py)
                                         )
                                         drawCircle(
                                             color = Color.White,
-                                            radius = 8f,
+                                            radius = 7f,
                                             center = Offset(px, py)
                                         )
                                     }
 
-                                    Row(
-                                        modifier = Modifier
-                                            .align(Alignment.BottomCenter)
-                                            .padding(12.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        listOf("Phone Screen", "DuoSpace Canvas", "App Window").forEach { src ->
-                                            val isSelected = selectedShareSource == src
-                                            Surface(
-                                                shape = RoundedCornerShape(50),
-                                                color = if (isSelected) DiscordBlurple else Color.Black.copy(alpha = 0.55f),
-                                                border = androidx.compose.foundation.BorderStroke(
-                                                    1.dp,
-                                                    Color.White.copy(alpha = if (isSelected) 0.4f else 0.15f)
-                                                ),
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(50))
-                                                    .clickable {
-                                                        selectedShareSource = src
-                                                    }
-                                            ) {
-                                                Text(
-                                                    text = src,
-                                                    fontSize = 10.5.sp,
-                                                    fontWeight = FontWeight.Medium,
-                                                    color = Color.White,
-                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                                                )
+                                    if (isSelfSharingNow) {
+                                        Row(
+                                            modifier = Modifier
+                                                .align(Alignment.BottomCenter)
+                                                .padding(10.dp)
+                                                .horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            listOf("Phone Screen", "DuoSpace Canvas", "App Window").forEach { src ->
+                                                val isSelected = selectedShareSource == src
+                                                Surface(
+                                                    shape = RoundedCornerShape(50),
+                                                    color = if (isSelected) DiscordBlurple else Color.Black.copy(alpha = 0.6f),
+                                                    border = androidx.compose.foundation.BorderStroke(
+                                                        1.dp,
+                                                        Color.White.copy(alpha = if (isSelected) 0.4f else 0.15f)
+                                                    ),
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(50))
+                                                        .clickable {
+                                                            selectedShareSource = src
+                                                            com.example.data.remote.HiveLivePeerRelay.setCallScreenShareState(
+                                                                isScreenSharing = true,
+                                                                label = src,
+                                                                pointerX = pointerNormalized.x,
+                                                                pointerY = pointerNormalized.y
+                                                            )
+                                                        }
+                                                ) {
+                                                    Text(
+                                                        text = src,
+                                                        fontSize = 10.5.sp,
+                                                        fontWeight = FontWeight.Medium,
+                                                        color = Color.White,
+                                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                                    )
+                                                }
+                                            }
+                                            if (sharedCanvasTrail.isNotEmpty()) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(50),
+                                                    color = DiscordRed.copy(alpha = 0.85f),
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(50))
+                                                        .clickable { sharedCanvasTrail = emptyList() }
+                                                ) {
+                                                    Text(
+                                                        text = "Clear Ink",
+                                                        fontSize = 10.5.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = Color.White,
+                                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -1573,11 +1977,16 @@ fun DuoCallOverlay(
                                     isSpeaking = isPartnerSpeaking,
                                     isMuted = false,
                                     isDeafened = isPartnerAudioMuted || isDeafened,
-                                    isVideoOn = callSession.isVideoEnabled,
-                                    isFrontCamera = true,
+                                    isVideoOn = isPartnerVideoOn,
+                                    isFrontCamera = partnerSignal.isPartnerFrontCamera,
+                                    isSelfTile = false,
+                                    hasCameraPermission = hasCallCameraPermission,
+                                    remoteVideoBitmap = if (!isPartnerScreenSharing) partnerVideoBitmap else null,
+                                    onRequestCameraPermission = {},
                                     isFullStage = false,
                                     showFlipButton = false,
                                     onFlipCamera = {},
+                                    onSingleTapTile = { isCallUiControlsVisible = !isCallUiControlsVisible },
                                     onDoubleTapTile = { stageFocus = CallStageFocus.PARTNER_FULL },
                                     modifier = Modifier
                                         .weight(1f)
@@ -1591,9 +2000,16 @@ fun DuoCallOverlay(
                                     isDeafened = isDeafened,
                                     isVideoOn = callSession.isVideoEnabled,
                                     isFrontCamera = callSession.isFrontCamera,
+                                    isSelfTile = true,
+                                    hasCameraPermission = hasCallCameraPermission,
+                                    remoteVideoBitmap = null,
+                                    onRequestCameraPermission = {
+                                        runCatching { callCameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
+                                    },
                                     isFullStage = false,
                                     showFlipButton = callSession.isVideoEnabled,
                                     onFlipCamera = onFlipCamera,
+                                    onSingleTapTile = { isCallUiControlsVisible = !isCallUiControlsVisible },
                                     onDoubleTapTile = { stageFocus = CallStageFocus.SELF_FULL },
                                     modifier = Modifier
                                         .weight(1f)
@@ -1616,11 +2032,18 @@ fun DuoCallOverlay(
                                 isSpeaking = if (isPartnerFocused) isPartnerSpeaking else isSelfSpeaking,
                                 isMuted = if (isPartnerFocused) false else callSession.isMuted,
                                 isDeafened = if (isPartnerFocused) (isPartnerAudioMuted || isDeafened) else isDeafened,
-                                isVideoOn = callSession.isVideoEnabled,
-                                isFrontCamera = if (isPartnerFocused) true else callSession.isFrontCamera,
+                                isVideoOn = if (isPartnerFocused) isPartnerVideoOn else callSession.isVideoEnabled,
+                                isFrontCamera = if (isPartnerFocused) partnerSignal.isPartnerFrontCamera else callSession.isFrontCamera,
+                                isSelfTile = !isPartnerFocused,
+                                hasCameraPermission = hasCallCameraPermission,
+                                remoteVideoBitmap = if (isPartnerFocused && !isPartnerScreenSharing) partnerVideoBitmap else null,
+                                onRequestCameraPermission = {
+                                    runCatching { callCameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
+                                },
                                 isFullStage = true,
                                 showFlipButton = !isPartnerFocused && callSession.isVideoEnabled,
                                 onFlipCamera = onFlipCamera,
+                                onSingleTapTile = { isCallUiControlsVisible = !isCallUiControlsVisible },
                                 onDoubleTapTile = { stageFocus = CallStageFocus.SPLIT_GRID },
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -1631,8 +2054,14 @@ fun DuoCallOverlay(
                                 name = if (isPartnerFocused) "You" else partnerName,
                                 isSpeaking = if (isPartnerFocused) isSelfSpeaking else isPartnerSpeaking,
                                 isMuted = if (isPartnerFocused) callSession.isMuted else (isPartnerAudioMuted || isDeafened),
-                                isVideoOn = callSession.isVideoEnabled,
-                                isFrontCamera = if (isPartnerFocused) callSession.isFrontCamera else true,
+                                isVideoOn = if (isPartnerFocused) callSession.isVideoEnabled else isPartnerVideoOn,
+                                isFrontCamera = if (isPartnerFocused) callSession.isFrontCamera else partnerSignal.isPartnerFrontCamera,
+                                isSelfTile = isPartnerFocused,
+                                hasCameraPermission = hasCallCameraPermission,
+                                remoteVideoBitmap = if (!isPartnerFocused && !isPartnerScreenSharing) partnerVideoBitmap else null,
+                                onRequestCameraPermission = {
+                                    runCatching { callCameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
+                                },
                                 showFlipButton = isPartnerFocused && callSession.isVideoEnabled,
                                 onFlipCamera = onFlipCamera,
                                 onSwapFocus = {
@@ -1656,11 +2085,16 @@ fun DuoCallOverlay(
                             isSpeaking = isPartnerSpeaking,
                             isMuted = false,
                             isDeafened = isPartnerAudioMuted || isDeafened,
-                            isVideoOn = callSession.isVideoEnabled,
-                            isFrontCamera = true,
+                            isVideoOn = isPartnerVideoOn,
+                            isFrontCamera = partnerSignal.isPartnerFrontCamera,
+                            isSelfTile = false,
+                            hasCameraPermission = hasCallCameraPermission,
+                            remoteVideoBitmap = if (!isPartnerScreenSharing) partnerVideoBitmap else null,
+                            onRequestCameraPermission = {},
                             isFullStage = false,
                             showFlipButton = false,
                             onFlipCamera = {},
+                            onSingleTapTile = { isCallUiControlsVisible = !isCallUiControlsVisible },
                             onDoubleTapTile = { stageFocus = CallStageFocus.PARTNER_FULL },
                             modifier = Modifier
                                 .weight(1f)
@@ -1675,9 +2109,16 @@ fun DuoCallOverlay(
                             isDeafened = isDeafened,
                             isVideoOn = callSession.isVideoEnabled,
                             isFrontCamera = callSession.isFrontCamera,
+                            isSelfTile = true,
+                            hasCameraPermission = hasCallCameraPermission,
+                            remoteVideoBitmap = null,
+                            onRequestCameraPermission = {
+                                runCatching { callCameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
+                            },
                             isFullStage = false,
                             showFlipButton = callSession.isVideoEnabled,
                             onFlipCamera = onFlipCamera,
+                            onSingleTapTile = { isCallUiControlsVisible = !isCallUiControlsVisible },
                             onDoubleTapTile = { stageFocus = CallStageFocus.SELF_FULL },
                             modifier = Modifier
                                 .weight(1f)
@@ -1915,7 +2356,7 @@ fun DuoCallOverlay(
                                     activeColor = DiscordGreen,
                                     onClick = {
                                         if (!callSession.isVideoEnabled) {
-                                            onToggleVideo()
+                                            handleToggleVideo()
                                         }
                                         onFlipCamera()
                                     },
@@ -2025,7 +2466,7 @@ fun DuoCallOverlay(
                             label = if (callSession.isVideoEnabled) "Cam On" else "Video",
                             containerColor = if (callSession.isVideoEnabled) DiscordBlurple else DiscordTileSecondary,
                             contentColor = Color.White,
-                            onClick = onToggleVideo,
+                            onClick = handleToggleVideo,
                             testTag = "call_video_toggle_button"
                         )
 
@@ -2110,9 +2551,14 @@ private fun DiscordParticipantTile(
     isDeafened: Boolean,
     isVideoOn: Boolean,
     isFrontCamera: Boolean,
+    isSelfTile: Boolean = false,
+    hasCameraPermission: Boolean = true,
+    remoteVideoBitmap: Bitmap? = null,
+    onRequestCameraPermission: () -> Unit = {},
     isFullStage: Boolean,
     showFlipButton: Boolean,
     onFlipCamera: () -> Unit,
+    onSingleTapTile: () -> Unit = {},
     onDoubleTapTile: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -2124,6 +2570,9 @@ private fun DiscordParticipantTile(
     val avatarSize = if (isFullStage) 96.dp else 70.dp
     val ringSize = if (isFullStage) 114.dp else 86.dp
 
+    val isShowingLiveVideo = (isSelfTile && isVideoOn && hasCameraPermission) ||
+        (!isSelfTile && (isVideoOn || remoteVideoBitmap != null) && remoteVideoBitmap != null)
+
     Surface(
         shape = RoundedCornerShape(22.dp),
         color = DiscordTileSurface,
@@ -2131,13 +2580,12 @@ private fun DiscordParticipantTile(
         modifier = modifier
             .clip(RoundedCornerShape(22.dp))
             .combinedClickable(
-                onClick = {},
+                onClick = onSingleTapTile,
                 onDoubleClick = onDoubleTapTile
             )
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            if (isVideoOn) {
-                // Live CameraX Video Feed + Studio Backdrop inside Participant Tile
+            if (isSelfTile && isVideoOn) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -2151,55 +2599,55 @@ private fun DiscordParticipantTile(
                             )
                         )
                 ) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        drawCircle(
-                            color = if (isFrontCamera) {
-                                DiscordBlurple.copy(alpha = 0.25f)
-                            } else {
-                                DiscordGreen.copy(alpha = 0.25f)
-                            },
-                            radius = size.minDimension * 0.42f,
-                            center = Offset(size.width * 0.5f, size.height * 0.45f)
-                        )
-                    }
                     CallLiveCameraFeed(
                         isFrontCamera = isFrontCamera,
+                        hasCameraPermission = hasCameraPermission,
+                        onRequestPermission = onRequestCameraPermission,
                         modifier = Modifier.fillMaxSize()
                     )
                 }
+            } else if (!isSelfTile && remoteVideoBitmap != null && isVideoOn) {
+                Image(
+                    bitmap = remoteVideoBitmap.asImageBitmap(),
+                    contentDescription = "$name live video",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
 
-            // Center Avatar with Discord Speaking Ring
-            Box(
-                modifier = Modifier.align(Alignment.Center),
-                contentAlignment = Alignment.Center
-            ) {
-                if (isSpeaking && !isMuted && !isDeafened) {
-                    Box(
-                        modifier = Modifier
-                            .size(ringSize)
-                            .clip(CircleShape)
-                            .background(DiscordGreen.copy(alpha = 0.22f))
-                    )
-                }
+            // Center Avatar with Discord Speaking Ring (hidden when live camera/video is actively rendering)
+            if (!isShowingLiveVideo) {
                 Box(
-                    modifier = Modifier
-                        .size(avatarSize)
-                        .clip(CircleShape)
-                        .background(DiscordTileSecondary.copy(alpha = if (isVideoOn) 0.48f else 1f))
-                        .border(
-                            width = if (isSpeaking && !isMuted && !isDeafened) 2.5.dp else 1.dp,
-                            color = if (isSpeaking && !isMuted && !isDeafened) DiscordGreen else Color.White.copy(alpha = 0.2f),
-                            shape = CircleShape
-                        ),
+                    modifier = Modifier.align(Alignment.Center),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = name.take(1).uppercase(),
-                        fontSize = if (isFullStage) 34.sp else 26.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
+                    if (isSpeaking && !isMuted && !isDeafened) {
+                        Box(
+                            modifier = Modifier
+                                .size(ringSize)
+                                .clip(CircleShape)
+                                .background(DiscordGreen.copy(alpha = 0.22f))
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(avatarSize)
+                            .clip(CircleShape)
+                            .background(DiscordTileSecondary)
+                            .border(
+                                width = if (isSpeaking && !isMuted && !isDeafened) 2.5.dp else 1.dp,
+                                color = if (isSpeaking && !isMuted && !isDeafened) DiscordGreen else Color.White.copy(alpha = 0.2f),
+                                shape = CircleShape
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = name.take(1).uppercase(),
+                            fontSize = if (isFullStage) 34.sp else 26.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
                 }
             }
 
@@ -2240,7 +2688,7 @@ private fun DiscordParticipantTile(
                 }
             }
 
-            // Bottom-Left Participant Name Pill (No status or feature text clutter)
+            // Bottom-Left Participant Name Pill
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 color = Color.Black.copy(alpha = 0.6f),
@@ -2290,35 +2738,51 @@ private fun DiscordParticipantTile(
 @Composable
 private fun CallLiveCameraFeed(
     isFrontCamera: Boolean,
+    hasCameraPermission: Boolean = true,
+    onRequestPermission: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val hasCamPerm = remember(context) {
+    val permGranted = hasCameraPermission || remember(context, hasCameraPermission) {
         ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
     }
     var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
+    var hasHardwareBitmap by remember { mutableStateOf(false) }
+    var fallbackCameraBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
-    if (hasCamPerm) {
-        AndroidView(
-            factory = { ctx ->
-                PreviewView(ctx).apply {
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                    implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-                    previewViewRef = this
-                }
-            },
-            update = { view ->
-                view.scaleX = 1f
-            },
-            modifier = modifier
-        )
+    if (permGranted) {
+        Box(modifier = modifier) {
+            AndroidView(
+                factory = { ctx ->
+                    PreviewView(ctx).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                        implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                        scaleType = PreviewView.ScaleType.FILL_CENTER
+                        previewViewRef = this
+                    }
+                },
+                update = { view ->
+                    view.scaleX = if (isFrontCamera) -1f else 1f
+                },
+                modifier = Modifier.fillMaxSize()
+            )
 
-        LaunchedEffect(previewViewRef, isFrontCamera) {
+            if (!hasHardwareBitmap && fallbackCameraBitmap != null) {
+                Image(
+                    bitmap = fallbackCameraBitmap!!.asImageBitmap(),
+                    contentDescription = "Live Camera Stream",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
+        LaunchedEffect(previewViewRef, isFrontCamera, permGranted) {
             val view = previewViewRef ?: return@LaunchedEffect
             try {
                 val providerFuture = ProcessCameraProvider.getInstance(context)
@@ -2351,6 +2815,91 @@ private fun CallLiveCameraFeed(
             } catch (_: Exception) {
             }
         }
+
+        // Periodically capture compressed live camera frames and transmit to partner via HiveLivePeerRelay
+        LaunchedEffect(previewViewRef, isFrontCamera, permGranted) {
+            val view = previewViewRef ?: return@LaunchedEffect
+            delay(350L)
+            var tick = 0
+            while (isActive) {
+                tick += 1
+                runCatching {
+                    val bmp = view.bitmap
+                    if (bmp != null && bmp.width > 16 && bmp.height > 16) {
+                        hasHardwareBitmap = true
+                        com.example.data.remote.HiveLivePeerRelay.submitLocalVideoBitmap(bmp, mode = "CAM")
+                    } else {
+                        hasHardwareBitmap = false
+                        val outW = 200
+                        val outH = 260
+                        val gen = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+                        val c = AndroidCanvas(gen)
+                        val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+                        p.shader = android.graphics.LinearGradient(
+                            0f,
+                            0f,
+                            outW.toFloat(),
+                            outH.toFloat(),
+                            if (isFrontCamera) intArrayOf(0xFF1E293B.toInt(), 0xFF0F172A.toInt())
+                            else intArrayOf(0xFF064E3B.toInt(), 0xFF0F172A.toInt()),
+                            null,
+                            android.graphics.Shader.TileMode.CLAMP
+                        )
+                        c.drawRect(0f, 0f, outW.toFloat(), outH.toFloat(), p)
+                        p.shader = null
+                        val pulse = (kotlin.math.sin(tick * 0.5) * 10.0).toFloat()
+                        p.color = android.graphics.Color.argb(65, 88, 101, 242)
+                        c.drawCircle(outW / 2f, outH / 2f, 48f + pulse, p)
+                        p.color = android.graphics.Color.argb(210, 255, 255, 255)
+                        p.textSize = 12f
+                        p.isFakeBoldText = true
+                        p.textAlign = android.graphics.Paint.Align.CENTER
+                        c.drawText(
+                            if (isFrontCamera) "LIVE FRONT CAM" else "LIVE BACK CAM",
+                            outW / 2f,
+                            outH / 2f + 4f,
+                            p
+                        )
+                        fallbackCameraBitmap = gen
+                        com.example.data.remote.HiveLivePeerRelay.submitLocalVideoBitmap(gen, mode = "CAM")
+                    }
+                }
+                delay(380L)
+            }
+        }
+    } else {
+        Box(
+            modifier = modifier,
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = DiscordBlurple,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .clickable(onClick = onRequestPermission)
+                    .testTag("call_allow_camera_button")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Videocam,
+                        contentDescription = "Allow Camera",
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "Tap to Allow Camera",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -2362,6 +2911,10 @@ private fun DiscordPipCornerTile(
     isMuted: Boolean,
     isVideoOn: Boolean,
     isFrontCamera: Boolean,
+    isSelfTile: Boolean = true,
+    hasCameraPermission: Boolean = true,
+    remoteVideoBitmap: Bitmap? = null,
+    onRequestCameraPermission: () -> Unit = {},
     showFlipButton: Boolean,
     onFlipCamera: () -> Unit,
     onSwapFocus: () -> Unit,
@@ -2371,6 +2924,8 @@ private fun DiscordPipCornerTile(
         targetValue = if (isSpeaking && !isMuted) DiscordGreen else Color.White.copy(alpha = 0.28f),
         label = "pip_speaking_border"
     )
+    val isShowingLiveVideo = (isSelfTile && isVideoOn && hasCameraPermission) ||
+        (!isSelfTile && (isVideoOn || remoteVideoBitmap != null) && remoteVideoBitmap != null)
 
     Surface(
         shape = RoundedCornerShape(18.dp),
@@ -2389,7 +2944,7 @@ private fun DiscordPipCornerTile(
             )
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            if (isVideoOn) {
+            if (isSelfTile && isVideoOn) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -2405,31 +2960,42 @@ private fun DiscordPipCornerTile(
                 ) {
                     CallLiveCameraFeed(
                         isFrontCamera = isFrontCamera,
+                        hasCameraPermission = hasCameraPermission,
+                        onRequestPermission = onRequestCameraPermission,
                         modifier = Modifier.fillMaxSize()
                     )
                 }
+            } else if (!isSelfTile && remoteVideoBitmap != null && isVideoOn) {
+                Image(
+                    bitmap = remoteVideoBitmap.asImageBitmap(),
+                    contentDescription = "$name video",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
 
-            // Mini Avatar in PiP
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .align(Alignment.Center)
-                    .clip(CircleShape)
-                    .background(DiscordTileSurface)
-                    .border(
-                        width = if (isSpeaking && !isMuted) 2.dp else 1.dp,
-                        color = if (isSpeaking && !isMuted) DiscordGreen else Color.White.copy(alpha = 0.2f),
-                        shape = CircleShape
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = name.take(1).uppercase(),
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
+            // Mini Avatar in PiP (only when live video is off)
+            if (!isShowingLiveVideo) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .align(Alignment.Center)
+                        .clip(CircleShape)
+                        .background(DiscordTileSurface)
+                        .border(
+                            width = if (isSpeaking && !isMuted) 2.dp else 1.dp,
+                            color = if (isSpeaking && !isMuted) DiscordGreen else Color.White.copy(alpha = 0.2f),
+                            shape = CircleShape
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = name.take(1).uppercase(),
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
             }
 
             // Flip camera button in top-right of PiP if self video is on
@@ -3194,3 +3760,218 @@ private fun buildChatMarkdown(space: SpaceEntity?, messages: List<MessageEntity>
         }
     }
 }
+
+@Composable
+fun HiveIncomingCallOverlay(
+    callerName: String,
+    callerAvatarBlob: String,
+    callMode: CallMode,
+    pulseFraction: Float,
+    onAnswer: () -> Unit,
+    onDecline: () -> Unit
+) {
+    val displayCaller = callerName.ifBlank { "Partner" }
+    val callTypeText = if (callMode == CallMode.VIDEO) {
+        "Incoming Hive Video Call…"
+    } else {
+        "Incoming Hive Voice Call…"
+    }
+
+    Surface(
+        color = Color(0xFF0A0B0E),
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("incoming_call_overlay")
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color(0xFF141824),
+                            Color(0xFF0B0C10),
+                            Color(0xFF08090C)
+                        )
+                    )
+                )
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 28.dp, vertical = 32.dp)
+        ) {
+            // Top Status Pill
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = Color(0xFF1E2230).copy(alpha = 0.9f),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    Color(0xFF10B981).copy(alpha = 0.45f)
+                ),
+                modifier = Modifier.align(Alignment.TopCenter)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(9.dp)
+                            .scale(0.85f + 0.3f * pulseFraction)
+                            .clip(CircleShape)
+                            .background(Color(0xFF10B981))
+                    )
+                    Text(
+                        text = "HIVE PRIVATE CALL",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color.White
+                    )
+                }
+            }
+
+            // Center Caller Avatar + Pulsing Rings + Name
+            Column(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(18.dp)
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.size(196.dp)
+                ) {
+                    // Outer pulsing ring
+                    Box(
+                        modifier = Modifier
+                            .size(186.dp)
+                            .scale(0.88f + 0.18f * pulseFraction)
+                            .clip(CircleShape)
+                            .background(Color(0xFF10B981).copy(alpha = 0.10f * (1f - 0.4f * pulseFraction)))
+                            .border(
+                                1.5.dp,
+                                Color(0xFF10B981).copy(alpha = 0.28f * (1f - 0.4f * pulseFraction)),
+                                CircleShape
+                            )
+                    )
+                    // Inner pulsing ring
+                    Box(
+                        modifier = Modifier
+                            .size(148.dp)
+                            .scale(0.92f + 0.12f * pulseFraction)
+                            .clip(CircleShape)
+                            .background(Color(0xFF10B981).copy(alpha = 0.16f))
+                            .border(
+                                1.5.dp,
+                                Color(0xFF10B981).copy(alpha = 0.45f),
+                                CircleShape
+                            )
+                    )
+
+                    UserAvatarCircle(
+                        name = displayCaller,
+                        avatarBlobName = callerAvatarBlob,
+                        sizeDp = 112,
+                        containerColor = Color(0xFF252836),
+                        contentColor = Color.White
+                    )
+                }
+
+                Text(
+                    text = displayCaller,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color.White,
+                    textAlign = TextAlign.Center
+                )
+
+                Text(
+                    text = callTypeText,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color(0xFFA1A1AA),
+                    textAlign = TextAlign.Center
+                )
+            }
+
+            // Bottom Decline & Answer Action Buttons
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 24.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Decline Button
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0xFFEF4444),
+                        shadowElevation = 10.dp,
+                        modifier = Modifier
+                            .size(74.dp)
+                            .clip(CircleShape)
+                            .clickable(onClick = onDecline)
+                            .testTag("incoming_call_decline_button")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.CallEnd,
+                                contentDescription = "Decline Call",
+                                tint = Color.White,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = "Decline",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFFFCA5A5)
+                    )
+                }
+
+                // Answer Button
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0xFF10B981),
+                        shadowElevation = 10.dp,
+                        modifier = Modifier
+                            .size(74.dp)
+                            .scale(0.96f + 0.06f * pulseFraction)
+                            .clip(CircleShape)
+                            .clickable(onClick = onAnswer)
+                            .testTag("incoming_call_answer_button")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (callMode == CallMode.VIDEO) {
+                                    Icons.Default.Videocam
+                                } else {
+                                    Icons.Default.Call
+                                },
+                                contentDescription = "Answer Call",
+                                tint = Color.White,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = "Answer",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF6EE7B7)
+                    )
+                }
+            }
+        }
+    }
+}
+

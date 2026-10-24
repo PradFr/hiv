@@ -15,10 +15,12 @@ data class CoupleNoteTextBox(
     val text: String,
     val xOffsetDp: Float = 16f,
     val yOffsetDp: Float = 16f,
-    val widthDp: Float = 130f,
-    val heightDp: Float = 60f,
-    val fontSizeSp: Float = 13f,
-    val colorArgb: Long = 0xFFFFF176L // Soft warm sticky note yellow
+    val widthDp: Float = 140f,
+    val heightDp: Float = 70f,
+    val fontSizeSp: Float = 18f,
+    val colorArgb: Long = 0x00000000L, // Background fill (default 0 = transparent)
+    val textColorArgb: Long = 0xFFFFFFFFL, // Text color (default White)
+    val rotationDeg: Float = 0f
 )
 
 data class CoupleNoteImage(
@@ -26,8 +28,9 @@ data class CoupleNoteImage(
     val imageBlobOrUri: String,
     val xOffsetDp: Float = 16f,
     val yOffsetDp: Float = 16f,
-    val widthDp: Float = 80f,
-    val heightDp: Float = 80f
+    val widthDp: Float = 96f,
+    val heightDp: Float = 96f,
+    val rotationDeg: Float = 0f
 )
 
 data class CoupleNoteBoard(
@@ -82,8 +85,10 @@ object CoupleNotePersistence {
                             yOffsetDp = obj.optDouble("y", 16.0).toFloat(),
                             widthDp = obj.optDouble("w", 130.0).toFloat(),
                             heightDp = obj.optDouble("h", 60.0).toFloat(),
-                            fontSizeSp = obj.optDouble("font_size", 13.0).toFloat(),
-                            colorArgb = obj.optLong("color", 0xFFFFF176L)
+                            fontSizeSp = obj.optDouble("font_size", 18.0).toFloat(),
+                            colorArgb = obj.optLong("color", 0x00000000L),
+                            textColorArgb = obj.optLong("text_color", 0xFFFFFFFFL),
+                            rotationDeg = obj.optDouble("rot", 0.0).toFloat()
                         )
                     )
                 }
@@ -100,8 +105,9 @@ object CoupleNotePersistence {
                             imageBlobOrUri = obj.optString("uri", ""),
                             xOffsetDp = obj.optDouble("x", 16.0).toFloat(),
                             yOffsetDp = obj.optDouble("y", 16.0).toFloat(),
-                            widthDp = obj.optDouble("w", 80.0).toFloat(),
-                            heightDp = obj.optDouble("h", 80.0).toFloat()
+                            widthDp = obj.optDouble("w", 96.0).toFloat(),
+                            heightDp = obj.optDouble("h", 96.0).toFloat(),
+                            rotationDeg = obj.optDouble("rot", 0.0).toFloat()
                         )
                     )
                 }
@@ -153,6 +159,8 @@ object CoupleNotePersistence {
             obj.put("h", item.heightDp.toDouble())
             obj.put("font_size", item.fontSizeSp.toDouble())
             obj.put("color", item.colorArgb)
+            obj.put("text_color", item.textColorArgb)
+            obj.put("rot", item.rotationDeg.toDouble())
             textArr.put(obj)
         }
         root.put("texts", textArr)
@@ -166,6 +174,7 @@ object CoupleNotePersistence {
             obj.put("y", img.yOffsetDp.toDouble())
             obj.put("w", img.widthDp.toDouble())
             obj.put("h", img.heightDp.toDouble())
+            obj.put("rot", img.rotationDeg.toDouble())
             imgArr.put(obj)
         }
         root.put("images", imgArr)

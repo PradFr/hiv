@@ -553,8 +553,8 @@ fun ChatPlusAttachmentTray(
                                 onSendAttachment(title, MessageType.COUPLE_CARD, meta)
                             },
                             onRedeemReceivedCoupon = { savedCoupon ->
-                                val newMeta = "${savedCoupon.badgeType}||${savedCoupon.subtitle}|REDEEMED by $activeUserName"
-                                onUpdateMessageMetaById(savedCoupon.messageId, newMeta)
+                                val meta = "${savedCoupon.badgeType}|${savedCoupon.messageId}|${savedCoupon.subtitle}|SHARED_TO_REDEEM"
+                                onSendAttachment(savedCoupon.title, MessageType.COUPLE_CARD, meta)
                             }
                         )
                     }
@@ -1449,7 +1449,7 @@ private fun CoupleExtrasTraySection(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "When $partnerName sends you a coupon in chat, tap Save on the coupon bubble to keep it here until you redeem it.",
+                        text = "When $partnerName sends you a coupon, tap Save on the coupon bubble to keep it here. Share it in chat whenever you want to redeem it!",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(14.dp)
@@ -1486,18 +1486,18 @@ private fun CoupleExtrasTraySection(
 
                             Button(
                                 onClick = {
-                                    receivedCoupons = HiveSettingsPersistence.removeReceivedCouponOnRedeem(
-                                        context = context,
-                                        messageId = coupon.messageId,
-                                        title = coupon.title,
-                                        recipientSlot = activeUser
-                                    )
                                     onRedeemReceivedCoupon(coupon)
                                 },
                                 shape = RoundedCornerShape(50),
-                                modifier = Modifier.testTag("redeem_received_coupon_$idx")
+                                modifier = Modifier.testTag("share_received_coupon_$idx")
                             ) {
-                                Text("Redeem", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Send,
+                                    contentDescription = "Share coupon in chat",
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text("Share", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }

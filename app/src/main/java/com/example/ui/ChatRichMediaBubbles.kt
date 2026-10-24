@@ -768,17 +768,19 @@ fun CoupleExtraCardBubbleView(
     onToggleRedeem: (newMediaMeta: String) -> Unit
 ) {
     val context = LocalContext.current
-    // mediaMeta: badgeType|emoji|subtitle|status
+    // mediaMeta: badgeType|originMsgId|subtitle|status
     val parts = remember(message.mediaMeta) { (message.mediaMeta ?: "").split("|") }
     val badgeType = parts.getOrNull(0)?.ifBlank { "COUPON" } ?: "COUPON"
+    val originMessageId = parts.getOrNull(1)?.takeIf { it.isNotBlank() } ?: message.id
     val subtitle = parts.getOrNull(2)?.ifBlank { "Shared Coupon" } ?: "Shared Coupon"
     val status = parts.getOrNull(3)?.ifBlank { "ACTIVE" } ?: "ACTIVE"
     val isRedeemed = status.startsWith("REDEEMED")
+    val isSharedToRedeem = status == "SHARED_TO_REDEEM"
     val isRecipient = message.senderId != activeUser.userId
 
     var isSavedToReceived by remember(message.id, activeUser, isRedeemed) {
         val currentReceived = HiveSettingsPersistence.loadReceivedCoupons(context, activeUser)
-        mutableStateOf(currentReceived.any { it.messageId == message.id || it.title == message.content })
+        mutableStateOf(currentReceived.any { it.messageId == message.id || it.messageId == originMessageId || it.title == message.content })
     }
 
     Column(
@@ -790,7 +792,7 @@ fun CoupleExtraCardBubbleView(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text(
-            text = badgeType,
+            text = if (isSharedToRedeem) "$badgeType • SHARED TO REDEEM" else badgeType,
             fontSize = 10.sp,
             fontWeight = FontWeight.ExtraBold,
             color = metaColor
@@ -837,86 +839,81 @@ fun CoupleExtraCardBubbleView(
                     )
                 }
             }
-        } else if (isRecipient) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+        } else if (isSharedToRedeem) {
+            // Shared from Received Coupons into Chat -> Clicking Redeem here redeems it!
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = Color(0xFF10B981).copy(alpha = 0.28f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(50))
+                    .clickable {
+                        HiveSettingsPersistence.removeReceivedCouponOnRedeem(
+                            context = context,
+                            messageId = originMessageId,
+                            title = message.content,
+                            recipientSlot = activeUser
+                        )
+                        isSavedToReceived = false
+                        val nextStatus = "REDEEMED by $activeUserName"
+                        val newMeta = "$badgeType|$originMessageId|$subtitle|$nextStatus"
+                        onToggleRedeem(newMeta)
+                    }
+                    .testTag("couple_card_redeem_${message.id}")
             ) {
-                // 1. Save to Received Coupons tab
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = if (isSavedToReceived) {
-                        Color(0xFF10B981).copy(alpha = 0.22f)
-                    } else {
-                        textColor.copy(alpha = 0.16f)
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(50))
-                        .clickable {
-                            if (!isSavedToReceived) {
-                                HiveSettingsPersistence.saveCouponToReceived(
-                                    context = context,
-                                    coupon = SavedCouponItem(
-                                        id = "rc_${message.id}",
-                                        messageId = message.id,
-                                        title = message.content,
-                                        subtitle = subtitle,
-                                        badgeType = badgeType,
-                                        fromUserName = message.senderName,
-                                        recipientSlot = activeUser
-                                    )
-                                )
-                                isSavedToReceived = true
-                            }
-                        }
-                        .testTag("couple_card_save_${message.id}")
+                Box(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier.padding(vertical = 7.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = if (isSavedToReceived) "Saved" else "Save",
-                            fontSize = 11.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = textColor
-                        )
-                    }
+                    Text(
+                        text = "Redeem Coupon",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = textColor
+                    )
                 }
-
-                // 2. Redeem (Recipient only; removes from Saved/Received)
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = textColor.copy(alpha = 0.24f),
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(50))
-                        .clickable {
-                            HiveSettingsPersistence.removeReceivedCouponOnRedeem(
+            }
+        } else if (isRecipient) {
+            // Initial coupon sent by partner: Recipient saves it to Received Coupons, then shares it in chat to redeem
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = if (isSavedToReceived) {
+                    Color(0xFF10B981).copy(alpha = 0.22f)
+                } else {
+                    textColor.copy(alpha = 0.20f)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(50))
+                    .clickable {
+                        if (!isSavedToReceived) {
+                            HiveSettingsPersistence.saveCouponToReceived(
                                 context = context,
-                                messageId = message.id,
-                                title = message.content,
-                                recipientSlot = activeUser
+                                coupon = SavedCouponItem(
+                                    id = "rc_${message.id}",
+                                    messageId = message.id,
+                                    title = message.content,
+                                    subtitle = subtitle,
+                                    badgeType = badgeType,
+                                    fromUserName = message.senderName,
+                                    recipientSlot = activeUser
+                                )
                             )
-                            isSavedToReceived = false
-                            val nextStatus = "REDEEMED by $activeUserName"
-                            val newMeta = "$badgeType||$subtitle|$nextStatus"
-                            onToggleRedeem(newMeta)
+                            isSavedToReceived = true
                         }
-                        .testTag("couple_card_redeem_${message.id}")
-                ) {
-                    Box(
-                        modifier = Modifier.padding(vertical = 7.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Redeem",
-                            fontSize = 11.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = textColor
-                        )
                     }
+                    .testTag("couple_card_save_${message.id}")
+            ) {
+                Box(
+                    modifier = Modifier.padding(vertical = 7.dp, horizontal = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = if (isSavedToReceived) "Saved • Share from Coupons to Redeem" else "Save to Received Coupons",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = textColor
+                    )
                 }
             }
         } else {

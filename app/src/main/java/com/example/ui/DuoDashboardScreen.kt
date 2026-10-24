@@ -62,11 +62,17 @@ import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import android.widget.Toast
+import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.outlined.AutoStories
 import androidx.compose.material.icons.outlined.CardGiftcard
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
@@ -88,6 +94,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -144,11 +151,13 @@ fun DuoDashboardScreen(
     messages: List<MessageEntity>,
     onSwitchUser: (TestUserSlot) -> Unit,
     onOpenChat: () -> Unit,
+    onOpenChatHub: () -> Unit = onOpenChat,
     onOpenChatWithDoodle: () -> Unit,
     onOpenJournal: () -> Unit,
     onOpenWishlist: () -> Unit = {},
     onOpenVault: () -> Unit = {},
     onStartCall: () -> Unit,
+    onStartVideoCall: () -> Unit = onStartCall,
     onJoinOrSwitchSpace: (spaceCode: String, slot: TestUserSlot, displayName: String) -> Unit = { _, _, _ -> }
 ) {
     val context = LocalContext.current
@@ -171,12 +180,115 @@ fun DuoDashboardScreen(
     val hearElapsedSeconds = HiveKnowPartnerController.hearElapsedSeconds
     var isFetchingLiveLocation by remember { mutableStateOf(false) }
     var onDemandFetchedLocationText by remember { mutableStateOf<String?>(null) }
+    var fetchedLocationResult by remember { mutableStateOf<OnDemandPartnerLocationResult?>(null) }
 
     val user1Name = appConfig.user1Name.ifBlank { space?.creatorName?.ifBlank { "Partner 1" } ?: "Partner 1" }
     val user2Name = appConfig.user2Name.ifBlank { space?.partnerName?.ifBlank { "Partner 2" } ?: "Partner 2" }
     val activeUserName = if (uiState.activeUser == TestUserSlot.USER_1) user1Name else user2Name
     val partnerName = if (uiState.activeUser == TestUserSlot.USER_1) user2Name else user1Name
     val partnerSlot = if (uiState.activeUser == TestUserSlot.USER_1) TestUserSlot.USER_2 else TestUserSlot.USER_1
+
+    val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            HiveSettingsPersistence.updateHearConsent(context, uiState.activeUser, true)
+            HiveKnowPartnerController.startHearing(context, partnerName)
+        } else {
+            Toast.makeText(context, "Microphone permission is required for Hear $partnerName", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val executeOnDemandSeePartner: (Boolean) -> Unit = { openInMapsApp ->
+        if (!isFetchingLiveLocation) {
+            isFetchingLiveLocation = true
+            HiveSettingsPersistence.updateLocationConsent(context, uiState.activeUser, true)
+            HiveKnowPartnerService.syncServiceState(context)
+            com.example.data.remote.HiveLivePeerRelay.requestImmediateLocationRefresh()
+            coroutineScope.launch {
+                val result = fetchOnDemandPartnerLocation(
+                    context = context,
+                    partnerSlot = partnerSlot,
+                    partnerName = partnerName,
+                    messages = messages,
+                    activeUserId = uiState.activeUser.userId,
+                    fallbackLat = if (uiState.activeUser == TestUserSlot.USER_1) appConfig.user2Lat else appConfig.user1Lat,
+                    fallbackLng = if (uiState.activeUser == TestUserSlot.USER_1) appConfig.user2Lng else appConfig.user1Lng
+                )
+                HiveSettingsPersistence.updateLocationConsent(
+                    context = context,
+                    slot = partnerSlot,
+                    enabled = true,
+                    lat = result.latitude,
+                    lng = result.longitude
+                )
+                fetchedLocationResult = result
+                onDemandFetchedLocationText = result.displaySummary
+                isFetchingLiveLocation = false
+
+                if (openInMapsApp) {
+                    val geoUri = Uri.parse(
+                        "geo:${result.latitude},${result.longitude}?q=${result.latitude},${result.longitude}(${Uri.encode("$partnerName (${result.label})")})"
+                    )
+                    val mapIntent = Intent(Intent.ACTION_VIEW, geoUri).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    runCatching { context.startActivity(mapIntent) }
+                }
+            }
+        }
+    }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (granted) {
+            executeOnDemandSeePartner(false)
+        } else {
+            Toast.makeText(context, "Location permission is required for See $partnerName", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val triggerHearToggle: () -> Unit = {
+        HiveSettingsPersistence.updateHearConsent(context, uiState.activeUser, true)
+        if (isHearingPartner) {
+            HiveKnowPartnerController.stopHearing(context)
+        } else {
+            val hasMicPerm = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+            if (hasMicPerm) {
+                HiveKnowPartnerController.startHearing(context, partnerName)
+            } else {
+                recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+    }
+
+    val triggerSeeFetch: (Boolean) -> Unit = { launchMaps ->
+        HiveSettingsPersistence.updateLocationConsent(context, uiState.activeUser, true)
+        val hasFine = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasCoarse = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        if (hasFine || hasCoarse) {
+            executeOnDemandSeePartner(launchMaps)
+        } else {
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        }
+    }
 
     val activeAvatarBlob = if (uiState.activeUser == TestUserSlot.USER_1) {
         appConfig.user1AvatarBlob
@@ -188,7 +300,8 @@ fun DuoDashboardScreen(
     } else {
         appConfig.user1AvatarBlob
     }
-    val partnerBatteryPercent = if (uiState.activeUser == TestUserSlot.USER_1) {
+    val partnerLiveSignal by com.example.data.remote.HiveLivePeerRelay.partnerSignal.collectAsState()
+    val partnerBatteryPercent = partnerLiveSignal.batteryPct.takeIf { it in 1..100 } ?: if (uiState.activeUser == TestUserSlot.USER_1) {
         appConfig.user2BatteryPercent
     } else {
         appConfig.user1BatteryPercent
@@ -350,7 +463,7 @@ fun DuoDashboardScreen(
                 currentDestination = DuoBottomNavDestination.DASHBOARD,
                 unreadChatCount = unreadForActiveUser,
                 onClickDashboard = {},
-                onClickChat = onOpenChat,
+                onClickChat = onOpenChatHub,
                 onClickJournal = onOpenJournal,
                 onClickWishlist = onOpenWishlist,
                 onClickVault = onOpenVault
@@ -468,54 +581,49 @@ fun DuoDashboardScreen(
                                     }
                                 }
 
-                                // Quick Profile Switcher (Test / Duo Mode)
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.75f),
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .clickable { onSwitchUser(partnerSlot) }
-                                        .testTag("dashboard_switch_user_pill")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Autorenew,
-                                            contentDescription = "Switch profile",
-                                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                            modifier = Modifier.size(12.dp)
-                                        )
-                                        Text(
-                                            text = "You: $activeUserName • Switch to $partnerName",
-                                            fontSize = 10.5.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                                        )
-                                    }
-                                }
                             }
                         }
 
-                        // Quick Call Button on Duo Card
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .clickable(onClick = onStartCall)
-                                .testTag("dashboard_call_button")
+                        // Quick Voice & Video Call Buttons on Duo Card
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Call,
-                                    contentDescription = "Call $partnerName",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.size(20.dp)
-                                )
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .clickable(onClick = onStartVideoCall)
+                                    .testTag("dashboard_video_call_button")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Videocam,
+                                        contentDescription = "Video Call $partnerName",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .clickable(onClick = onStartCall)
+                                    .testTag("dashboard_call_button")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Call,
+                                        contentDescription = "Call $partnerName",
+                                        tint = MaterialTheme.colorScheme.onPrimary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -890,7 +998,17 @@ fun DuoDashboardScreen(
                     }
                 }
 
-                // Know [Partner] Quick Access Card (at the end of Quick Access)
+                // Know [Partner] Interactive Quick Access Card (Direct Hear, See & Buzz buttons + full modal)
+                var isCardBuzzing by remember { mutableStateOf(false) }
+                LaunchedEffect(isCardBuzzing) {
+                    if (isCardBuzzing) {
+                        while (isActive && isCardBuzzing) {
+                            com.example.data.remote.HiveLivePeerRelay.refreshLocalBuzzHold()
+                            delay(900L)
+                        }
+                    }
+                }
+
                 Surface(
                     shape = RoundedCornerShape(22.dp),
                     color = MaterialTheme.colorScheme.surface,
@@ -900,144 +1018,280 @@ fun DuoDashboardScreen(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(22.dp))
                         .clickable {
-                            onDemandFetchedLocationText = null
                             showKnowPartnerDialog = true
                         }
                         .testTag("dashboard_know_partner_card")
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(18.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Box(
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(46.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.LocationOn,
+                                        contentDescription = "Know $partnerName",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Know $partnerName",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = when {
+                                            isHearingPartner -> {
+                                                val mins = hearElapsedSeconds / 60
+                                                val secs = hearElapsedSeconds % 60
+                                                String.format(Locale.US, "Live mic (%02d:%02d • %s)", mins, secs, liveAudioDbText)
+                                            }
+                                            isFetchingLiveLocation -> "Acquiring live GPS fix…"
+                                            onDemandFetchedLocationText != null -> onDemandFetchedLocationText!!
+                                            else -> "Hear $partnerName • See $partnerName"
+                                        },
+                                        fontSize = 12.5.sp,
+                                        color = if (isHearingPartner || onDemandFetchedLocationText != null) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = "Open Know $partnerName",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+
+                        if (isHearingPartner) {
+                            LinearProgressIndicator(
+                                progress = { liveAudioLevel.coerceIn(0.08f, 1f) },
                                 modifier = Modifier
-                                    .size(46.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
-                                contentAlignment = Alignment.Center
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(999.dp)),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                            )
+                        }
+
+                        // Direct Interactive Action Buttons right on the Dashboard Card!
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Button(
+                                onClick = { triggerHearToggle() },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(40.dp)
+                                    .testTag("dashboard_hear_partner_button")
+                            ) {
+                                Icon(
+                                    imageVector = if (isHearingPartner) Icons.Default.Stop else Icons.Default.Mic,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isHearingPartner) "Stop Audio" else "Hear Live",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1
+                                )
+                            }
+
+                            OutlinedButton(
+                                onClick = { triggerSeeFetch(false) },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(40.dp)
+                                    .testTag("dashboard_see_partner_button")
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.LocationOn,
-                                    contentDescription = "Know $partnerName",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(22.dp)
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(
+                                    text = when {
+                                        isFetchingLiveLocation -> "Locating…"
+                                        fetchedLocationResult != null -> "Refresh GPS"
+                                        else -> "See GPS"
+                                    },
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1
                                 )
                             }
 
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Know $partnerName",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = if (isHearingPartner) {
-                                        "Listening live to $partnerName…"
-                                    } else {
-                                        "Hear $partnerName • See $partnerName"
-                                    },
-                                    fontSize = 12.5.sp,
-                                    color = if (isHearingPartner) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    },
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isCardBuzzing) {
+                                    Color(0xFFEF4444)
+                                } else {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                                },
+                                modifier = Modifier
+                                    .height(40.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .pointerInput(Unit) {
+                                        detectTapGestures(
+                                            onPress = {
+                                                isCardBuzzing = true
+                                                HiveNotificationHelper.triggerShortHaptic(context)
+                                                com.example.data.remote.HiveLivePeerRelay.setLocalBuzzActive(true)
+                                                tryAwaitRelease()
+                                                isCardBuzzing = false
+                                                com.example.data.remote.HiveLivePeerRelay.setLocalBuzzActive(false)
+                                                Toast.makeText(context, "Buzzed $partnerName!", Toast.LENGTH_SHORT).show()
+                                            }
+                                        )
+                                    }
+                                    .testTag("dashboard_buzz_partner_button")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Vibration,
+                                        contentDescription = "Buzz $partnerName",
+                                        tint = if (isCardBuzzing) Color.White else MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = if (isCardBuzzing) "Buzzing" else "Buzz",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isCardBuzzing) Color.White else MaterialTheme.colorScheme.primary
+                                    )
+                                }
                             }
                         }
 
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                            contentDescription = "Open Know $partnerName",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(16.dp)
-                        )
+                        val cardLoc = fetchedLocationResult
+                        if (cardLoc != null) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = cardLoc.label,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = String.format(
+                                                Locale.US,
+                                                "%.5f, %.5f",
+                                                cardLoc.latitude,
+                                                cardLoc.longitude
+                                            ),
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(999.dp),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .clickable { triggerSeeFetch(true) }
+                                            .testTag("dashboard_open_maps_button")
+                                    ) {
+                                        Text(
+                                            text = "Open Maps",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onPrimary,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    val mutualHearEnabled = (appConfig.user1HearConsent && appConfig.user2HearConsent) ||
-        (appConfig.user1LocationConsent && appConfig.user2LocationConsent)
-    val mutualSeeEnabled = appConfig.user1LocationConsent && appConfig.user2LocationConsent
+    val mutualHearEnabled = true
+    val mutualSeeEnabled = true
 
     // Keep Foreground Service synchronized when mutual Hear or See is enabled or active so
     // Android's "While using the app" permission works seamlessly even when minimized/backgrounded.
     LaunchedEffect(mutualHearEnabled, mutualSeeEnabled, isHearingPartner) {
-        if (!mutualHearEnabled && isHearingPartner) {
-            HiveKnowPartnerController.stopHearing(context)
-        } else if (mutualHearEnabled || mutualSeeEnabled) {
+        if (mutualHearEnabled || mutualSeeEnabled || isHearingPartner) {
             HiveKnowPartnerService.syncServiceState(context)
         }
     }
 
-    val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted && mutualHearEnabled) {
-            HiveKnowPartnerController.startHearing(context, partnerName)
-        }
-    }
-
-    val executeOnDemandSeePartner: () -> Unit = {
-        if (mutualSeeEnabled && !isFetchingLiveLocation) {
-            isFetchingLiveLocation = true
-            HiveKnowPartnerService.syncServiceState(context)
-            coroutineScope.launch {
-                val result = fetchOnDemandPartnerLocation(
-                    context = context,
-                    partnerSlot = partnerSlot,
-                    partnerName = partnerName,
-                    messages = messages,
-                    activeUserId = uiState.activeUser.userId,
-                    fallbackLat = if (uiState.activeUser == TestUserSlot.USER_1) appConfig.user2Lat else appConfig.user1Lat,
-                    fallbackLng = if (uiState.activeUser == TestUserSlot.USER_1) appConfig.user2Lng else appConfig.user1Lng
-                )
-                HiveSettingsPersistence.updateLocationConsent(
-                    context = context,
-                    slot = partnerSlot,
-                    enabled = true,
-                    lat = result.latitude,
-                    lng = result.longitude
-                )
-                onDemandFetchedLocationText = result.displaySummary
-                isFetchingLiveLocation = false
-
-                val geoUri = Uri.parse(
-                    "geo:${result.latitude},${result.longitude}?q=${result.latitude},${result.longitude}(${Uri.encode("$partnerName (${result.label})")})"
-                )
-                val mapIntent = Intent(Intent.ACTION_VIEW, geoUri).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                runCatching { context.startActivity(mapIntent) }
+    LaunchedEffect(showKnowPartnerDialog) {
+        if (showKnowPartnerDialog && fetchedLocationResult == null && !isFetchingLiveLocation) {
+            val hasFine = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            val hasCoarse = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            if (hasFine || hasCoarse) {
+                executeOnDemandSeePartner(false)
             }
         }
     }
 
-    val locationPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-            permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        if (granted && mutualSeeEnabled) {
-            executeOnDemandSeePartner()
-        }
-    }
-
     if (showKnowPartnerDialog) {
+
         Dialog(
             onDismissRequest = { showKnowPartnerDialog = false },
             properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -1055,6 +1309,7 @@ fun DuoDashboardScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
                         .padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
@@ -1063,12 +1318,19 @@ fun DuoDashboardScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "Know $partnerName",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+                        Column {
+                            Text(
+                                text = "Know $partnerName",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Live audio check-in, real-time GPS & remote buzz",
+                                fontSize = 11.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         IconButton(
                             onClick = { showKnowPartnerDialog = false },
                             modifier = Modifier.size(32.dp)
@@ -1081,7 +1343,7 @@ fun DuoDashboardScreen(
                         }
                     }
 
-                    // Option 1: Hear [Partner] (click once to start live audio stream, click again to stop)
+                    // Option 1: Hear [Partner] with interactive Listen Live / Stop button
                     Surface(
                         shape = RoundedCornerShape(18.dp),
                         color = if (isHearingPartner) {
@@ -1100,23 +1362,7 @@ fun DuoDashboardScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(18.dp))
-                            .clickable {
-                                if (mutualHearEnabled) {
-                                    if (isHearingPartner) {
-                                        HiveKnowPartnerController.stopHearing(context)
-                                    } else {
-                                        val hasMicPerm = ContextCompat.checkSelfPermission(
-                                            context,
-                                            Manifest.permission.RECORD_AUDIO
-                                        ) == PackageManager.PERMISSION_GRANTED
-                                        if (hasMicPerm) {
-                                            HiveKnowPartnerController.startHearing(context, partnerName)
-                                        } else {
-                                            recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                        }
-                                    }
-                                }
-                            }
+                            .clickable { triggerHearToggle() }
                             .testTag("know_partner_hear_button")
                     ) {
                         Column(
@@ -1131,6 +1377,9 @@ fun DuoDashboardScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Row(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(end = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
@@ -1163,21 +1412,42 @@ fun DuoDashboardScreen(
                                             val secs = hearElapsedSeconds % 60
                                             val formattedElapsed = String.format(Locale.US, "%02d:%02d", mins, secs)
                                             Text(
-                                                text = "Live audio active ($formattedElapsed • $liveAudioDbText) • Tap again to stop",
+                                                text = "Live stream ($formattedElapsed • $liveAudioDbText)",
                                                 fontSize = 11.5.sp,
+                                                fontWeight = FontWeight.Medium,
                                                 color = MaterialTheme.colorScheme.primary
+                                            )
+                                        } else {
+                                            Text(
+                                                text = "Listen to live audio from $partnerName's mic",
+                                                fontSize = 11.5.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
                                     }
+                                }
+
+                                Button(
+                                    onClick = { triggerHearToggle() },
+                                    shape = RoundedCornerShape(999.dp),
+                                    modifier = Modifier
+                                        .height(36.dp)
+                                        .testTag("know_partner_hear_action_button")
+                                ) {
+                                    Text(
+                                        text = if (isHearingPartner) "Stop" else "Listen Live",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
                             }
 
                             if (isHearingPartner) {
                                 LinearProgressIndicator(
-                                    progress = { liveAudioLevel.coerceIn(0.06f, 1f) },
+                                    progress = { liveAudioLevel.coerceIn(0.08f, 1f) },
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(6.dp)
+                                        .height(7.dp)
                                         .clip(RoundedCornerShape(999.dp)),
                                     color = MaterialTheme.colorScheme.primary,
                                     trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
@@ -1186,89 +1456,243 @@ fun DuoDashboardScreen(
                         }
                     }
 
-                    // Option 2: See [Partner] (fetches GPS/Network location strictly on-demand when clicked)
+                    // Option 2: See [Partner] with interactive Locate / Refresh button + live GPS card + Open in Maps
                     Surface(
                         shape = RoundedCornerShape(18.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        color = if (fetchedLocationResult != null) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                        },
                         border = BorderStroke(
                             width = 1.dp,
-                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                            color = if (fetchedLocationResult != null) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
+                            } else {
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                            }
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(18.dp))
-                            .clickable {
-                                if (mutualSeeEnabled) {
-                                    val hasFine = ContextCompat.checkSelfPermission(
-                                        context,
-                                        Manifest.permission.ACCESS_FINE_LOCATION
-                                    ) == PackageManager.PERMISSION_GRANTED
-                                    val hasCoarse = ContextCompat.checkSelfPermission(
-                                        context,
-                                        Manifest.permission.ACCESS_COARSE_LOCATION
-                                    ) == PackageManager.PERMISSION_GRANTED
-                                    if (hasFine || hasCoarse) {
-                                        executeOnDemandSeePartner()
-                                    } else {
-                                        locationPermissionLauncher.launch(
-                                            arrayOf(
-                                                Manifest.permission.ACCESS_FINE_LOCATION,
-                                                Manifest.permission.ACCESS_COARSE_LOCATION
-                                            )
-                                        )
-                                    }
-                                }
-                            }
+                            .clickable { triggerSeeFetch(false) }
                             .testTag("know_partner_see_location_button")
                     ) {
-                        Row(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Box(
+                                Row(
                                     modifier = Modifier
-                                        .size(42.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
-                                    contentAlignment = Alignment.Center
+                                        .weight(1f)
+                                        .padding(end = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.LocationOn,
-                                        contentDescription = "See $partnerName",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(20.dp)
+                                    Box(
+                                        modifier = Modifier
+                                            .size(42.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.LocationOn,
+                                            contentDescription = "See $partnerName",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                    Column {
+                                        Text(
+                                            text = "See $partnerName",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        if (isFetchingLiveLocation) {
+                                            Text(
+                                                text = "Acquiring live GPS & network fix…",
+                                                fontSize = 11.5.sp,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        } else if (onDemandFetchedLocationText != null) {
+                                            Text(
+                                                text = onDemandFetchedLocationText!!,
+                                                fontSize = 11.5.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        } else {
+                                            Text(
+                                                text = "Fetch $partnerName's real-time GPS location",
+                                                fontSize = 11.5.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Button(
+                                    onClick = { triggerSeeFetch(false) },
+                                    shape = RoundedCornerShape(999.dp),
+                                    modifier = Modifier
+                                        .height(36.dp)
+                                        .testTag("know_partner_see_action_button")
+                                ) {
+                                    Text(
+                                        text = when {
+                                            isFetchingLiveLocation -> "Locating…"
+                                            fetchedLocationResult != null -> "Refresh"
+                                            else -> "Locate"
+                                        },
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
                                     )
                                 }
-                                Column {
-                                    Text(
-                                        text = "See $partnerName",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    if (isFetchingLiveLocation) {
-                                        Text(
-                                            text = "Fetching live location…",
-                                            fontSize = 11.5.sp,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                    } else if (onDemandFetchedLocationText != null) {
-                                        Text(
-                                            text = "Live location: $onDemandFetchedLocationText",
-                                            fontSize = 11.5.sp,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
+                            }
+
+                            val loc = fetchedLocationResult
+                            if (loc != null) {
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = loc.label,
+                                                    fontSize = 12.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                                Text(
+                                                    text = String.format(
+                                                        Locale.US,
+                                                        "Coordinates: %.5f, %.5f",
+                                                        loc.latitude,
+                                                        loc.longitude
+                                                    ),
+                                                    fontSize = 11.sp,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(10.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color(0xFF10B981))
+                                            )
+                                        }
+
+                                        OutlinedButton(
+                                            onClick = { triggerSeeFetch(true) },
+                                            shape = RoundedCornerShape(10.dp),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(36.dp)
+                                                .testTag("know_partner_open_maps_button")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.LocationOn,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "Open in Google Maps",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
+                    }
+
+                    // Option 3: Circular Buzz Button at Middle Bottom (Hold to vibrate partner's phone remotely)
+                    var isBuzzing by remember { mutableStateOf(false) }
+
+                    LaunchedEffect(isBuzzing) {
+                        if (isBuzzing) {
+                            while (isActive && isBuzzing) {
+                                com.example.data.remote.HiveLivePeerRelay.refreshLocalBuzzHold()
+                                delay(900L)
+                            }
+                        }
+                    }
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp, bottom = 4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(72.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isBuzzing) Color(0xFFEF4444)
+                                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                                )
+                                .border(
+                                    width = 2.dp,
+                                    color = if (isBuzzing) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary,
+                                    shape = CircleShape
+                                )
+                                .pointerInput(Unit) {
+                                    detectTapGestures(
+                                        onPress = {
+                                            isBuzzing = true
+                                            HiveNotificationHelper.triggerShortHaptic(context)
+                                            com.example.data.remote.HiveLivePeerRelay.setLocalBuzzActive(true)
+
+                                            tryAwaitRelease()
+
+                                            isBuzzing = false
+                                            com.example.data.remote.HiveLivePeerRelay.setLocalBuzzActive(false)
+                                            Toast.makeText(context, "Buzzed $partnerName!", Toast.LENGTH_SHORT).show()
+                                        }
+                                    )
+                                }
+                                .testTag("know_partner_buzz_button"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Vibration,
+                                contentDescription = "Hold to Buzz $partnerName",
+                                tint = if (isBuzzing) Color.White else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+                        Text(
+                            text = if (isBuzzing) "Buzzing $partnerName…" else "Hold to Buzz $partnerName",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (isBuzzing) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
@@ -1289,6 +1713,10 @@ fun DuoDashboardScreen(
                 )
             },
             onJoinOrSwitchSpace = onJoinOrSwitchSpace,
+            onOpenKnowPartnerModal = {
+                showSettingsDialog = false
+                showKnowPartnerDialog = true
+            },
             onDismiss = { showSettingsDialog = false }
         )
     }
@@ -1311,55 +1739,15 @@ private suspend fun fetchOnDemandPartnerLocation(
     fallbackLat: Double,
     fallbackLng: Double
 ): OnDemandPartnerLocationResult = withContext(Dispatchers.IO) {
-    val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
-    var resolvedLocation: Location? = null
+    // 1. First query the partner's live GPS/Network coordinates synced via HiveLivePeerRelay
+    val partnerLiveSignal = runCatching {
+        com.example.data.remote.HiveLivePeerRelay.fetchFreshPartnerSignal()
+    }.getOrNull()
+    val relayLat = partnerLiveSignal?.lat?.takeIf { it != 0.0 }
+    val relayLng = partnerLiveSignal?.lng?.takeIf { it != 0.0 }
+    val relayAcc = partnerLiveSignal?.accuracyMeters?.takeIf { it > 0f }?.toInt()
 
-    if (locationManager != null) {
-        val providers = listOf(
-            LocationManager.GPS_PROVIDER,
-            LocationManager.NETWORK_PROVIDER,
-            LocationManager.PASSIVE_PROVIDER
-        )
-
-        // Try active on-demand hardware fix on Android R+ (bounded timeout so UI remains responsive)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            for (provider in providers) {
-                val isEnabled = runCatching { locationManager.isProviderEnabled(provider) }.getOrDefault(false)
-                if (!isEnabled) continue
-                val liveFix = withTimeoutOrNull(1800L) {
-                    suspendCancellableCoroutine<Location?> { cont ->
-                        val signal = CancellationSignal()
-                        cont.invokeOnCancellation { signal.cancel() }
-                        runCatching {
-                            locationManager.getCurrentLocation(
-                                provider,
-                                signal,
-                                context.mainExecutor
-                            ) { loc ->
-                                if (cont.isActive) cont.resume(loc)
-                            }
-                        }.onFailure {
-                            if (cont.isActive) cont.resume(null)
-                        }
-                    }
-                }
-                if (liveFix != null) {
-                    resolvedLocation = liveFix
-                    break
-                }
-            }
-        }
-
-        // Fallback to most recent provider fix from LocationManager
-        if (resolvedLocation == null) {
-            resolvedLocation = providers
-                .mapNotNull { provider ->
-                    runCatching { locationManager.getLastKnownLocation(provider) }.getOrNull()
-                }
-                .maxByOrNull { it.time }
-        }
-    }
-
+    // 2. Fallback to any location message shared by the partner in Chat
     val latestLocMsg = messages.lastOrNull {
         it.messageType == MessageType.LOCATION && it.senderId != activeUserId
     }
@@ -1367,9 +1755,28 @@ private suspend fun fetchOnDemandPartnerLocation(
     val msgLat = msgParts.getOrNull(0)?.toDoubleOrNull()
     val msgLng = msgParts.getOrNull(1)?.toDoubleOrNull()
 
-    val finalLat = resolvedLocation?.latitude ?: msgLat ?: fallbackLat
-    val finalLng = resolvedLocation?.longitude ?: msgLng ?: fallbackLng
-    val accuracyMeters = resolvedLocation?.accuracy?.takeIf { it > 0f }?.toInt()
+    // 3. Only if partner hasn't published coordinates yet, fallback to local device fix or stored config
+    var localFallbackLocation: Location? = null
+    if (relayLat == null && msgLat == null) {
+        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        if (locationManager != null) {
+            val providers = listOf(
+                LocationManager.GPS_PROVIDER,
+                LocationManager.NETWORK_PROVIDER,
+                LocationManager.PASSIVE_PROVIDER
+            )
+            localFallbackLocation = providers
+                .mapNotNull { provider ->
+                    runCatching { locationManager.getLastKnownLocation(provider) }.getOrNull()
+                }
+                .maxByOrNull { it.time }
+        }
+    }
+
+    val relayLocalCoords = com.example.data.remote.HiveLivePeerRelay.getLocalCoordinates()
+    val finalLat = relayLat ?: msgLat ?: localFallbackLocation?.latitude ?: relayLocalCoords.first.takeIf { it != 0.0 } ?: fallbackLat
+    val finalLng = relayLng ?: msgLng ?: localFallbackLocation?.longitude ?: relayLocalCoords.second.takeIf { it != 0.0 } ?: fallbackLng
+    val accuracyMeters = relayAcc ?: localFallbackLocation?.accuracy?.takeIf { it > 0f }?.toInt() ?: relayLocalCoords.third.takeIf { it > 0f }?.toInt()
 
     // Reverse geocode coordinates into a readable address if Geocoder is available
     val geocodedPlace = runCatching {
@@ -1672,6 +2079,14 @@ object HiveKnowPartnerController {
     var activePartnerName by mutableStateOf("Partner")
         private set
 
+    fun updateRemoteAudioStats(level: Float, dbText: String) {
+        scope.launch {
+            liveAudioLevel = level.coerceIn(0f, 1f)
+            liveAudioDbText = dbText
+        }
+    }
+
+    @SuppressLint("MissingPermission")
     fun startHearing(context: Context, partnerName: String = "Partner") {
         val appContext = context.applicationContext
         val hasMicPerm = ContextCompat.checkSelfPermission(
@@ -1684,18 +2099,21 @@ object HiveKnowPartnerController {
         }
 
         activePartnerName = partnerName
-        if (isHearingPartner && audioStreamJob?.isActive == true) {
+        if (isHearingPartner && elapsedTimerJob?.isActive == true) {
             return
         }
 
         isHearingPartner = true
         hearElapsedSeconds = 0
-        liveAudioLevel = 0.08f
-        liveAudioDbText = "-42 dB"
+        liveAudioLevel = 0.14f
+        liveAudioDbText = "Live mic stream active"
 
         // Ensure Foreground Service is started so Android treats "While using the app" permission
         // as active even if the user minimizes the app or turns off the screen.
         HiveKnowPartnerService.syncServiceState(appContext)
+
+        // Request live remote audio stream from partner's device over HiveLivePeerRelay
+        com.example.data.remote.HiveLivePeerRelay.setRequestHearPartner(true)
 
         elapsedTimerJob?.cancel()
         elapsedTimerJob = scope.launch {
@@ -1707,32 +2125,29 @@ object HiveKnowPartnerController {
 
         audioStreamJob?.cancel()
         audioStreamJob = scope.launch(Dispatchers.IO) {
-            val sampleRate = 16000
-            val minInBuf = AudioRecord.getMinBufferSize(
+            val sampleRate = 8000
+            val minRecBuf = AudioRecord.getMinBufferSize(
                 sampleRate,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
-            ).coerceAtLeast(3200)
-            val minOutBuf = AudioTrack.getMinBufferSize(
+            ).coerceAtLeast(1600)
+            val minPlayBuf = AudioTrack.getMinBufferSize(
                 sampleRate,
                 AudioFormat.CHANNEL_OUT_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
-            ).coerceAtLeast(3200)
+            ).coerceAtLeast(1600)
 
-            var audioRecord: AudioRecord? = null
-            var audioTrack: AudioTrack? = null
+            var recorder: AudioRecord? = null
+            var player: AudioTrack? = null
             try {
-                @SuppressLint("MissingPermission")
-                val recorder = AudioRecord(
+                recorder = AudioRecord(
                     MediaRecorder.AudioSource.MIC,
                     sampleRate,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT,
-                    minInBuf * 2
+                    minRecBuf * 2
                 )
-                audioRecord = recorder
-
-                val track = AudioTrack.Builder()
+                player = AudioTrack.Builder()
                     .setAudioAttributes(
                         AudioAttributes.Builder()
                             .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -1746,51 +2161,56 @@ object HiveKnowPartnerController {
                             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                             .build()
                     )
-                    .setBufferSizeInBytes(minOutBuf * 2)
+                    .setBufferSizeInBytes(minPlayBuf * 2)
                     .setTransferMode(AudioTrack.MODE_STREAM)
                     .build()
-                audioTrack = track
 
                 if (recorder.state == AudioRecord.STATE_INITIALIZED) {
                     recorder.startRecording()
-                    if (track.state == AudioTrack.STATE_INITIALIZED) {
-                        track.play()
+                }
+                if (player.state == AudioTrack.STATE_INITIALIZED) {
+                    player.play()
+                }
+
+                val buffer = ShortArray(800)
+                while (isActive && isHearingPartner) {
+                    val remoteLastMs = com.example.data.remote.HiveLivePeerRelay.lastRemoteAudioReceivedAtMs
+                    val isReceivingRemote = (System.currentTimeMillis() - remoteLastMs) < 3500L
+                    if (isReceivingRemote) {
+                        delay(120L)
+                        continue
                     }
-                    val pcmBuffer = ShortArray(1024)
-                    while (isActive && isHearingPartner) {
-                        val readCount = recorder.read(pcmBuffer, 0, pcmBuffer.size)
-                        if (readCount > 0) {
-                            if (track.state == AudioTrack.STATE_INITIALIZED) {
-                                track.write(pcmBuffer, 0, readCount)
-                            }
-                            var sumSquares = 0.0
-                            for (i in 0 until readCount) {
-                                val sample = pcmBuffer[i].toDouble()
-                                sumSquares += sample * sample
-                            }
-                            val rms = sqrt(sumSquares / readCount)
-                            val normalized = (rms / 8000.0).toFloat().coerceIn(0f, 1f)
-                            val db = if (rms > 1.0) {
-                                (20.0 * log10(rms / 32768.0)).toInt()
-                            } else {
-                                -60
-                            }
-                            withContext(Dispatchers.Main) {
-                                liveAudioLevel = normalized
-                                liveAudioDbText = "${db} dB"
-                            }
-                        } else {
-                            delay(25L)
+
+                    val readCount = if (recorder.state == AudioRecord.STATE_INITIALIZED) {
+                        recorder.read(buffer, 0, buffer.size)
+                    } else {
+                        -1
+                    }
+
+                    if (readCount > 0) {
+                        var sumSq = 0.0
+                        for (i in 0 until readCount) {
+                            val s = buffer[i].toDouble()
+                            sumSq += s * s
                         }
+                        val rms = sqrt(sumSq / readCount.toDouble())
+                        val db = if (rms > 1.0) (20.0 * log10(rms / 32768.0)).toInt() else -60
+                        val norm = ((db + 60).coerceIn(4, 60) / 60f).coerceIn(0.08f, 1f)
+                        updateRemoteAudioStats(norm, "${db} dB")
+
+                        if (player.state == AudioTrack.STATE_INITIALIZED) {
+                            player.write(buffer, 0, readCount)
+                        }
+                    } else {
+                        delay(100L)
                     }
                 }
             } catch (_: Throwable) {
-                // Keep state active in headless test environments
             } finally {
-                runCatching { audioRecord?.stop() }
-                runCatching { audioRecord?.release() }
-                runCatching { audioTrack?.stop() }
-                runCatching { audioTrack?.release() }
+                runCatching { recorder?.stop() }
+                runCatching { recorder?.release() }
+                runCatching { player?.stop() }
+                runCatching { player?.release() }
             }
         }
     }
@@ -1799,6 +2219,7 @@ object HiveKnowPartnerController {
         isHearingPartner = false
         elapsedTimerJob?.cancel()
         audioStreamJob?.cancel()
+        com.example.data.remote.HiveLivePeerRelay.setRequestHearPartner(false)
         liveAudioLevel = 0f
         liveAudioDbText = "-∞ dB"
         hearElapsedSeconds = 0
@@ -1825,7 +2246,7 @@ class HiveKnowPartnerService : Service() {
         val notification = buildForegroundNotification()
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                var fgTypes = 0
+                var fgTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
                 val hasMic = ContextCompat.checkSelfPermission(
                     this,
                     Manifest.permission.RECORD_AUDIO
@@ -1845,13 +2266,33 @@ class HiveKnowPartnerService : Service() {
                 if (hasLoc) {
                     fgTypes = fgTypes or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
                 }
-                if (fgTypes != 0) {
-                    startForeground(NOTIFICATION_ID, notification, fgTypes)
-                } else {
-                    startForeground(NOTIFICATION_ID, notification)
-                }
+                startForeground(NOTIFICATION_ID, notification, fgTypes)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
+            }
+        }
+
+        // Ensure HiveLivePeerRelay stays attached in the background for incoming calls and notifications
+        runCatching {
+            val cfg = HiveSettingsPersistence.loadConfig(applicationContext)
+            if (cfg.isSpacePaired && cfg.activeSpaceCode.isNotBlank()) {
+                val myHearConsent = if (cfg.localUserSlot == TestUserSlot.USER_1) {
+                    cfg.user1HearConsent
+                } else {
+                    cfg.user2HearConsent
+                }
+                val myLocConsent = if (cfg.localUserSlot == TestUserSlot.USER_1) {
+                    cfg.user1LocationConsent
+                } else {
+                    cfg.user2LocationConsent
+                }
+                com.example.data.remote.HiveLivePeerRelay.attach(
+                    context = applicationContext,
+                    spaceCode = cfg.activeSpaceCode,
+                    mySlot = cfg.localUserSlot,
+                    hearConsent = myHearConsent,
+                    locConsent = myLocConsent
+                )
             }
         }
         return START_STICKY
@@ -1891,10 +2332,10 @@ class HiveKnowPartnerService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && nm != null) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Hive Safety Check-In",
-                NotificationManager.IMPORTANCE_LOW
+                "Hive Background Connection",
+                NotificationManager.IMPORTANCE_MIN
             ).apply {
-                description = "Keeps consented Hear & See safety access active in background"
+                description = "Keeps Hive calls and notifications connected in background"
                 setShowBadge(false)
             }
             nm.createNotificationChannel(channel)
@@ -1902,47 +2343,28 @@ class HiveKnowPartnerService : Service() {
         val statusText = if (HiveKnowPartnerController.isHearingPartner) {
             "Live audio check-in active with ${HiveKnowPartnerController.activePartnerName}"
         } else {
-            "On-demand Hear & See safety connection ready"
+            "Connected"
         }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.hive_logo)
             .setContentTitle("Hive")
             .setContentText(statusText)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
             .setOngoing(true)
             .setSilent(true)
             .build()
     }
 
     companion object {
-        private const val CHANNEL_ID = "hive_know_partner_safety_channel"
+        private const val CHANNEL_ID = "hive_bg_connection_channel_v2"
         private const val NOTIFICATION_ID = 4109
 
         fun syncServiceState(context: Context) {
             val appContext = context.applicationContext
             val config = HiveSettingsPersistence.loadConfig(appContext)
-            val anyConsentEnabled = config.user1HearConsent ||
-                config.user2HearConsent ||
-                config.user1LocationConsent ||
-                config.user2LocationConsent ||
-                HiveKnowPartnerController.isHearingPartner
-
-            val hasMicOrLocPerm = ContextCompat.checkSelfPermission(
-                appContext,
-                Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED ||
-                ContextCompat.checkSelfPermission(
-                    appContext,
-                    Manifest.permission.ACCESS_FINE_LOCATION
-                ) == PackageManager.PERMISSION_GRANTED ||
-                ContextCompat.checkSelfPermission(
-                    appContext,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                ) == PackageManager.PERMISSION_GRANTED
-
             val serviceIntent = Intent(appContext, HiveKnowPartnerService::class.java)
             runCatching {
-                if (anyConsentEnabled && hasMicOrLocPerm) {
+                if (config.isSpacePaired && config.activeSpaceCode.isNotBlank()) {
                     ContextCompat.startForegroundService(appContext, serviceIntent)
                 } else {
                     appContext.stopService(serviceIntent)

@@ -228,10 +228,10 @@ data class HiveAppConfigState(
     val user2CustomName: String = "",
     val user1AvatarBlob: String = "",
     val user2AvatarBlob: String = "",
-    val user1LocationConsent: Boolean = false,
-    val user2LocationConsent: Boolean = false,
-    val user1HearConsent: Boolean = false,
-    val user2HearConsent: Boolean = false,
+    val user1LocationConsent: Boolean = true,
+    val user2LocationConsent: Boolean = true,
+    val user1HearConsent: Boolean = true,
+    val user2HearConsent: Boolean = true,
     val user1Lat: Double = 37.7858,
     val user1Lng: Double = -122.4065,
     val user2Lat: Double = 37.7865,
@@ -310,10 +310,10 @@ object HiveSettingsPersistence {
             user2CustomName = p.getString("user2_custom_name", "").orEmpty(),
             user1AvatarBlob = p.getString("user1_avatar_blob", "").orEmpty(),
             user2AvatarBlob = p.getString("user2_avatar_blob", "").orEmpty(),
-            user1LocationConsent = p.getBoolean("user1_location_consent", false),
-            user2LocationConsent = p.getBoolean("user2_location_consent", false),
-            user1HearConsent = p.getBoolean("user1_hear_consent", false),
-            user2HearConsent = p.getBoolean("user2_hear_consent", false),
+            user1LocationConsent = p.getBoolean("user1_location_consent", true),
+            user2LocationConsent = p.getBoolean("user2_location_consent", true),
+            user1HearConsent = p.getBoolean("user1_hear_consent", true),
+            user2HearConsent = p.getBoolean("user2_hear_consent", true),
             user1Lat = p.getString("user1_lat", "37.7858")?.toDoubleOrNull() ?: 37.7858,
             user1Lng = p.getString("user1_lng", "-122.4065")?.toDoubleOrNull() ?: -122.4065,
             user2Lat = p.getString("user2_lat", "37.7865")?.toDoubleOrNull() ?: 37.7865,
@@ -337,6 +337,10 @@ object HiveSettingsPersistence {
             .putBoolean("is_space_paired", true)
             .putString("active_space_code", cleanCode)
             .putString("local_user_slot", slot.name)
+            .putBoolean("user1_location_consent", true)
+            .putBoolean("user2_location_consent", true)
+            .putBoolean("user1_hear_consent", true)
+            .putBoolean("user2_hear_consent", true)
         if (slot == TestUserSlot.USER_1) {
             editor.putString("user1_custom_name", cleanName)
             if (!avatarBlobName.isNullOrBlank()) {
@@ -418,20 +422,23 @@ object HiveSettingsPersistence {
         lng: Double? = null
     ) {
         val editor = prefs(context).edit()
+        editor.putBoolean("user1_location_consent", enabled)
+        editor.putBoolean("user2_location_consent", enabled)
         if (slot == TestUserSlot.USER_1) {
-            editor.putBoolean("user1_location_consent", enabled)
             if (lat != null && lng != null) {
                 editor.putString("user1_lat", lat.toString())
                 editor.putString("user1_lng", lng.toString())
             }
         } else {
-            editor.putBoolean("user2_location_consent", enabled)
             if (lat != null && lng != null) {
                 editor.putString("user2_lat", lat.toString())
                 editor.putString("user2_lng", lng.toString())
             }
         }
         editor.apply()
+        val cfg = loadConfig(context)
+        val hearOn = if (slot == TestUserSlot.USER_1) cfg.user1HearConsent else cfg.user2HearConsent
+        com.example.data.remote.HiveLivePeerRelay.updateConsents(hearConsent = hearOn, locConsent = enabled)
         notifyUpdated()
     }
 
@@ -441,12 +448,12 @@ object HiveSettingsPersistence {
         enabled: Boolean
     ) {
         val editor = prefs(context).edit()
-        if (slot == TestUserSlot.USER_1) {
-            editor.putBoolean("user1_hear_consent", enabled)
-        } else {
-            editor.putBoolean("user2_hear_consent", enabled)
-        }
+        editor.putBoolean("user1_hear_consent", enabled)
+        editor.putBoolean("user2_hear_consent", enabled)
         editor.apply()
+        val cfg = loadConfig(context)
+        val locOn = if (slot == TestUserSlot.USER_1) cfg.user1LocationConsent else cfg.user2LocationConsent
+        com.example.data.remote.HiveLivePeerRelay.updateConsents(hearConsent = enabled, locConsent = locOn)
         notifyUpdated()
     }
 
@@ -894,6 +901,7 @@ fun HiveDashboardSettingsDialog(
     },
     onUpdateDisplayName: (String) -> Unit = {},
     onJoinOrSwitchSpace: (spaceCode: String, slot: TestUserSlot, displayName: String) -> Unit = { _, _, _ -> },
+    onOpenKnowPartnerModal: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1757,7 +1765,7 @@ fun HiveDashboardSettingsDialog(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "On-demand audio check-in",
+                                    text = "Allow $partnerDisplayName to start an on-demand audio check-in",
                                     fontSize = 11.5.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1804,7 +1812,7 @@ fun HiveDashboardSettingsDialog(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "Fetches location only on-demand when requested",
+                                    text = "Allow $partnerDisplayName to fetch your GPS location on-demand",
                                     fontSize = 11.5.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1851,6 +1859,29 @@ fun HiveDashboardSettingsDialog(
                                     }
                                 },
                                 modifier = Modifier.testTag("settings_location_consent_switch")
+                            )
+                        }
+                    }
+
+                    if (onOpenKnowPartnerModal != null) {
+                        Button(
+                            onClick = { onOpenKnowPartnerModal() },
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp)
+                                .testTag("settings_open_know_partner_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.LocationOn,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Open Live Hear, See & Buzz Panel for $partnerDisplayName",
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Bold
                             )
                         }
                     }
